@@ -971,12 +971,26 @@ app.post('/api/admin/orders/manual', (req, res) => {
   const user = requireAdmin(req, res);
   if (!user) return;
 
-  const { employee_id, name, meal_type, menu, service_date } = req.body || {};
+  const { employee_id, name, meal_type, menu, selection, service_date } = req.body || {};
 
   if (!employee_id || !name) return res.status(400).json({ error: '사번과 이름을 입력해주세요' });
   if (!['breakfast', 'late_night'].includes(meal_type)) return res.status(400).json({ error: '잘못된 식사 유형입니다' });
-  if (!menu || !String(menu).trim()) return res.status(400).json({ error: '메뉴를 입력해주세요' });
   if (!service_date || !validDate(service_date)) return res.status(400).json({ error: '날짜 형식이 올바르지 않습니다 (YYYY-MM-DD)' });
+
+  // Derive menu text and selection JSON (same as regular order endpoints)
+  let finalMenu = menu ? String(menu).trim() : '';
+  let selectionJSON = null;
+
+  if (meal_type === 'breakfast' && selection) {
+    const v = validateBreakfastSelection(selection);
+    if (v.error) return res.status(400).json({ error: v.error });
+    selectionJSON = JSON.stringify(v.selection);
+    finalMenu = v.menu;
+  } else if (meal_type === 'late_night') {
+    if (!finalMenu) return res.status(400).json({ error: '메뉴를 입력해주세요' });
+  } else {
+    if (!finalMenu) return res.status(400).json({ error: '메뉴를 입력해주세요' });
+  }
 
   // Upsert user
   let target = getUserByEmployeeId(String(employee_id).trim());
@@ -995,13 +1009,14 @@ app.post('/api/admin/orders/manual', (req, res) => {
   `).get(target.id, meal_type, service_date);
 
   if (existing) {
-    db.prepare('UPDATE meal_orders SET menu = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?').run(String(menu).trim(), existing.id);
+    db.prepare('UPDATE meal_orders SET menu = ?, selection = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(finalMenu, selectionJSON, existing.id);
     return res.json({ ok: true, action: 'updated', order_id: existing.id });
   }
 
   const ins = db.prepare(`
-    INSERT INTO meal_orders (user_id, meal_type, menu, service_date) VALUES (?, ?, ?, ?)
-  `).run(target.id, meal_type, String(menu).trim(), service_date);
+    INSERT INTO meal_orders (user_id, meal_type, menu, selection, service_date) VALUES (?, ?, ?, ?, ?)
+  `).run(target.id, meal_type, finalMenu, selectionJSON, service_date);
   res.json({ ok: true, action: 'created', order_id: Number(ins.lastInsertRowid) });
 });
 

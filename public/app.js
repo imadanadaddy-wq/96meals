@@ -2099,7 +2099,7 @@
         <h2 class="step-h">김밥/주먹밥 선택</h2>
         <div class="menu-grid" style="margin-top:10px;">
           ${opts.map(o => `
-            <button class="menu-chip ${draftKimbapChoice===o.id?'selected':''}" data-kid="${o.id}" data-kname="${escape(o.name)}">
+            <button class="menu-chip ${draftKimbapChoice===o.name?'selected':''}" data-kname="${escape(o.name)}">
               ${escape(o.name)}
             </button>
           `).join('')}
@@ -2110,15 +2110,15 @@
         <button class="btn btn-primary" id="aBfKimbapNext">다음 →</button>
       </div>
     `;
-    area.querySelectorAll('[data-kid]').forEach(b =>
+    area.querySelectorAll('[data-kname]').forEach(b =>
       b.addEventListener('click', () => {
-        draftKimbapChoice = Number(b.dataset.kid);
+        draftKimbapChoice = b.dataset.kname;
         draftMenuName = b.dataset.kname;
         _renderAdminBfKimbap(area);
       }));
     document.getElementById('aBfBack').addEventListener('click', () => { bfStep = 'form'; _areaRefreshBf(); });
     document.getElementById('aBfKimbapNext').addEventListener('click', async () => {
-      if (!draftKimbapChoice) { toast('메뉴를 선택해주세요'); return; }
+      if (!draftKimbapChoice || !draftMenuName) { toast('메뉴를 선택해주세요'); return; }
       bfStep = 'note';
       _areaRefreshBf();
     });
@@ -2336,7 +2336,8 @@
     document.getElementById('aBfNoteSubmit').addEventListener('click', async () => {
       let selection;
       if (draftMealForm === 'kimbap') {
-        selection = { meal_form: 'kimbap', kimbap_option_id: draftKimbapChoice, note: draftNote };
+        // 서버는 kimbap_choice(이름 문자열)를 기대함 — draftMenuName에 이름이 저장됨
+        selection = { meal_form: 'kimbap', kimbap_choice: draftMenuName, note: draftNote };
       } else {
         selection = {
           meal_form: 'snack_pick',
