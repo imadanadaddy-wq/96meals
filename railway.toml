@@ -1,0 +1,11 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "node server.js"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+
+# 데이터 영구 보관을 위해 Railway 대시보드에서 Volume을 /data 에 마운트하고
+# 환경변수 DATABASE_PATH=/data/knuh.db 를 설정하세요.
