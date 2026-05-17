@@ -1026,6 +1026,30 @@ app.listen(PORT, () => {
   console.log(`KNUH Meal Dashboard listening on :${PORT}`);
   console.log(`DB: ${DB_PATH}`);
 
+  // ── 자정 자동 삭제: 전날(service_date < 오늘) 주문 전량 삭제 ──────────────
+  function scheduleMidnightCleanup() {
+    const now = new Date();
+    // Next midnight (local)
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5); // 00:00:05
+    const msUntil = next - now;
+    setTimeout(() => {
+      try {
+        const today = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
+        const result = db.prepare(`
+          DELETE FROM meal_orders
+          WHERE service_date < ?
+        `).run(today);
+        console.log(`[midnight cleanup] deleted ${result.changes} orders older than ${today}`);
+      } catch (e) {
+        console.error('[midnight cleanup] error:', e);
+      }
+      scheduleMidnightCleanup(); // reschedule for next midnight
+    }, msUntil);
+    console.log(`[midnight cleanup] scheduled in ${Math.round(msUntil / 60000)}min`);
+  }
+  scheduleMidnightCleanup();
+  // ──────────────────────────────────────────────────────────────────────────
+
   // Warn if DB is likely on ephemeral storage on Railway
   const onRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
   const isEphemeral = !DB_PATH.startsWith('/data') && !DB_PATH.startsWith('/mnt') && !DB_PATH.startsWith('/var/lib');

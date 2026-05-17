@@ -330,9 +330,7 @@
             <span class="count">밤 야식</span>
           </button>
         </div>
-        <button class="btn btn-ghost skip-meal-btn" id="skipMealBtn">
-          🙅 오늘은 패스할게요
-        </button>
+
       ` : `
         <div class="section-title" style="margin-top:14px;">
           <h2>내 신청 현황</h2>
@@ -369,14 +367,7 @@
 
     $('#switchRole').addEventListener('click', () => { saveRole(null); render(); });
 
-    const skipBtn = document.getElementById('skipMealBtn');
-    if (skipBtn) {
-      skipBtn.addEventListener('click', () => {
-        toast('오늘도 화이팅! 🙌');
-        saveRole(null);
-        render();
-      });
-    }
+
 
     document.querySelectorAll('[data-meal]').forEach(b =>
       b.addEventListener('click', () => {
@@ -558,7 +549,6 @@
     // bfStep initial = 'form'
     if (!bfStep) bfStep = 'form';
     if (bfStep === 'form') return renderBfForm();
-    if (bfStep === 'no_meal') return renderBfNoMeal();
     if (bfStep === 'kimbap') return renderBfKimbap();
     if (bfStep === 'tier') return renderBfTier();
     if (bfStep === 'fallback') return renderBfFallback();
@@ -592,23 +582,27 @@
           </button>
         </div>
 
-        <button class="choice-card no-meal-card" data-form="no_meal" style="margin-top:10px;">
-          <span class="emoji">🚫</span>
-          <span style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;">
-            <span class="name">필요없어요</span>
-            <span class="count" style="text-align:left;">오늘은 안 받을게요 (출근은 함)</span>
-          </span>
+        <button class="btn btn-ghost skip-meal-btn" id="noMealBtn" style="margin-top:10px;">
+          🙅 오늘은 안 받을게요
         </button>
       </div>
     `;
     $('#stepBack').addEventListener('click', () => { applicantStep = 'date'; renderApplicantStep(); });
+
+    // 패스 버튼: 메모 없이 바로 신청
+    const noMealBtn = document.getElementById('noMealBtn');
+    if (noMealBtn) {
+      noMealBtn.addEventListener('click', async () => {
+        draftMealForm = 'no_meal';
+        await submitOrders({ selection: { meal_form: 'no_meal' } });
+      });
+    }
+
     document.querySelectorAll('[data-form]').forEach(b =>
       b.addEventListener('click', () => {
         const f = b.dataset.form;
         draftMealForm = f;
-        if (f === 'no_meal') {
-          bfStep = 'no_meal';
-        } else if (f === 'kimbap') {
+        if (f === 'kimbap') {
           bfStep = 'kimbap';
         } else {
           // Pre-fill from existing single-date order if same form
@@ -1473,12 +1467,16 @@
       if (sel.meal_form === 'snack_pick') {
         const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
         const parts = prios.map((cc, i) => {
-          const slots = (cc.slots || []).filter(s => !s.fixed);
-          const slotSummary = slots.map(s => {
+          const allSlots = cc.slots || [];
+          const chosen = allSlots.filter(s => !s.fixed).map(s => {
             const pri = Array.isArray(s.priority) ? s.priority : [];
             return pri.slice(0, 2).join('→');
           }).filter(Boolean).join(' ');
-          return `<span class="vc-tier-chip ${i === 0 ? 'primary' : 'secondary'}">${i+1}순위 ${escape(cc.category_name || '')}${slotSummary ? ` · ${slotSummary}` : ''}</span>`;
+          const fixed = allSlots.filter(s => s.fixed && s.fixed !== '음료' && s.fixed !== s.slot_name)
+            .map(s => escape(s.fixed)).join(' · ');
+          const detail = [chosen, fixed ? `(${fixed})` : ''].filter(Boolean).join(' ');
+          const label = detail ? ` · ${detail}` : '';
+          return `<span class="vc-tier-chip ${i === 0 ? 'primary' : 'secondary'}">${i+1}순위 ${escape(cc.category_name || '')}${label}</span>`;
         }).join('');
         const note = sel.note ? ` <span class="vc-note">📝 ${escape(sel.note)}</span>` : '';
         const fallback = sel.fallback_any ? ' <span class="vc-note">🎲 아무거나OK</span>' : '';
