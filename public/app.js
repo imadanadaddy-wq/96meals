@@ -1298,6 +1298,36 @@
     else renderActingList();
   }
 
+  // One-line menu summary for the modal (shown below barcode)
+  function renderMenuOneLine(order) {
+    const sel = order.selection;
+    if (order.meal_type === 'breakfast' && sel) {
+      if (sel.meal_form === 'kimbap') {
+        return `🍙 ${escape(sel.kimbap_choice || '')}${sel.note ? ` · 📝 ${escape(sel.note)}` : ''}`;
+      }
+      if (sel.meal_form === 'snack_pick') {
+        const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
+        const parts = prios.map((cc, i) => {
+          const slots = (cc.slots || []).filter(s => !s.fixed);
+          const slotSummary = slots.map(s => {
+            const pri = Array.isArray(s.priority) ? s.priority : [];
+            return pri.slice(0, 2).join('/');
+          }).filter(Boolean).join(' ');
+          return `<span class="vc-tier-chip ${i === 0 ? 'primary' : 'secondary'}">${i+1}순위 ${escape(cc.category_name || '')}${slotSummary ? ` · ${slotSummary}` : ''}</span>`;
+        }).join('');
+        const note = sel.note ? ` <span class="vc-note">📝 ${escape(sel.note)}</span>` : '';
+        const fallback = sel.fallback_any ? ' <span class="vc-note">🎲 아무거나OK</span>' : '';
+        return parts + fallback + note;
+      }
+      if (Array.isArray(sel.slots)) {
+        const parts = sel.slots.filter(s => !s.fixed && Array.isArray(s.priority) && s.priority.length)
+          .map(s => s.priority.slice(0, 2).join('/')).join(' · ');
+        return `${sel.category_name ? escape(sel.category_name) + ' · ' : ''}${parts}${sel.note ? ` 📝 ${escape(sel.note)}` : ''}`;
+      }
+    }
+    return escape(order.menu);
+  }
+
   // Renders a single category choice (one priority tier) on light surface — compact card for horizontal scroll
   function renderCategoryChoiceLight(cc, tierIdx) {
     const catName = cc.category_name || '';
@@ -1462,20 +1492,16 @@
       if (animDir > 0) card.classList.add('enter-right');
       else if (animDir < 0) card.classList.add('enter-left');
       card.innerHTML = `
-        <div class="modal-compact-header">
-          <div class="modal-compact-left">
-            <span class="id-name-sm">${escape(order.name || user.name)}</span>
-            <span class="id-eid-sm">사번 ${escape(order.employee_id || user.employee_id)}</span>
-          </div>
-          <div class="modal-compact-center">
-            ${mealEmoji(order.meal_type)} ${mealLabel(order.meal_type)} · ${fmtDate(order.service_date, { withMonth: true })}
-          </div>
+        <div class="vc-top-row">
+          <div class="vc-meta">${mealEmoji(order.meal_type)} ${mealLabel(order.meal_type)} · ${fmtDate(order.service_date, { withMonth: true })}</div>
           <button class="modal-close" data-action="close" aria-label="닫기">✕</button>
         </div>
-        ${renderOrderDetailLight(order)}
+        <div class="vc-name">${escape(order.name || user.name)}</div>
+        <div class="vc-eid">사번 ${escape(order.employee_id || user.employee_id)}</div>
         <div class="barcode-wrap">
           <svg class="barcode-svg"></svg>
         </div>
+        <div class="vc-menu-summary">${renderMenuOneLine(order)}</div>
         <div class="modal-actions">
           <button class="btn btn-ghost-light" data-action="close">닫기</button>
           ${allowPickup ? `<button class="btn" data-action="pickup">수령 완료 · 다음</button>` : ''}
@@ -1487,8 +1513,8 @@
 
       try {
         JsBarcode(card.querySelector('.barcode-svg'), String(order.employee_id || user.employee_id), {
-          format: 'CODE128', displayValue: true, fontSize: 16,
-          height: 90, margin: 6, background: '#ffffff', lineColor: '#000000',
+          format: 'CODE128', displayValue: true, fontSize: 18,
+          height: 110, margin: 8, background: '#ffffff', lineColor: '#000000',
         });
       } catch (e) { console.error('barcode error', e); }
 

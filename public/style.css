@@ -528,15 +528,14 @@ input, textarea { font-family: inherit; }
 .id-menu .label { display: block; font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
 
 .barcode-wrap {
-  margin-top: 20px;
-  padding: 20px 12px 8px;
+  margin-top: 10px;
+  padding: 12px 0 4px;
   background: #fff;
-  border-radius: 14px;
   display: flex;
   flex-direction: column;
   align-items: center;
 }
-.barcode-wrap svg { width: 100%; max-width: 360px; height: auto; }
+.barcode-wrap svg { width: 100%; height: auto; }
 
 .modal-actions {
   display: flex;
@@ -1476,4 +1475,63 @@ input, textarea { font-family: inherit; }
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+/* ===== New viewer card layout ===== */
+.vc-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.vc-meta {
+  font-size: 12px;
+  color: #999;
+  letter-spacing: 0.02em;
+}
+.vc-name {
+  font-size: 28px;
+  font-weight: 800;
+  color: #111;
+  line-height: 1.1;
+}
+.vc-eid {
+  font-size: 14px;
+  color: #888;
+  margin-top: 2px;
+  margin-bottom: 0;
+  font-variant-numeric: tabular-nums;
+}
+.vc-menu-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 10px 0 4px;
+  font-size: 13px;
+  color: #555;
+  min-height: 32px;
+}
+.vc-tier-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.vc-tier-chip.primary {
+  background: #fff8e6;
+  color: #5b4500;
+  border: 1px solid #ffe9a8;
+}
+.vc-tier-chip.secondary {
+  background: #f3f4f6;
+  color: #555;
+  border: 1px solid #e0e0e0;
+}
+.vc-note {
+  font-size: 12px;
+  color: #888;
 }
