@@ -294,39 +294,38 @@ function loadBreakfastStructure({ include_inactive = false } = {}) {
 //   note?: string
 // }
 function summarizeCategoryChoice(cc) {
+  const emoji = cc.category_emoji || '';
+  const name = cc.category_name || '';
   const parts = [];
   for (const s of (cc.slots || [])) {
     if (s.fixed) { parts.push(s.fixed); continue; }
     const pri = Array.isArray(s.priority) ? s.priority : [];
-    let txt = '';
-    if (pri.length === 1) txt = pri[0];
-    else if (pri.length > 1) txt = pri.map((v, i) => `${v}(${i + 1})`).join('/');
-    if (s.any) txt = txt ? `${txt} or 아무거나` : '아무거나';
-    if (!txt) continue;
-    parts.push(`${s.slot_name}: ${txt}`);
+    let txt = pri.join('→');
+    if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
+    if (txt) parts.push(txt);
   }
-  return `${cc.category_name}{${parts.join(' · ')}}`;
+  const detail = parts.join(' | ');
+  return detail ? `${emoji}${name} · ${detail}` : `${emoji}${name}`;
 }
 
 function summarizeBreakfast(sel) {
   if (!sel) return '';
   if (sel.meal_form === 'no_meal') {
-    let s = '[미수령] 식사 안 받음';
+    let s = '🚫 식사 안 받음';
     if (sel.note) s += ` — ${sel.note}`;
     return s;
   }
   if (sel.meal_form === 'kimbap') {
-    let s = `[김밥/주먹밥] ${sel.kimbap_choice || ''}`;
+    let s = `🍙 ${sel.kimbap_choice || ''}`;
     if (sel.note) s += ` — ${sel.note}`;
     return s;
   }
   // snack_pick
   const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
   if (prios.length === 0) return '';
-  const head = `[스낵픽]`;
   const tiers = prios.map((cc, i) => `${i + 1}순위 ${summarizeCategoryChoice(cc)}`).join(' → ');
-  const tail = sel.fallback_any ? ' → 없으면 아무거나' : '';
-  let s = `${head} ${tiers}${tail}`;
+  const tail = sel.fallback_any ? ' → 🎲아무거나' : '';
+  let s = `🥣 ${tiers}${tail}`;
   if (sel.note) s += ` — ${sel.note}`;
   return s;
 }

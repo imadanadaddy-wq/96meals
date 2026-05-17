@@ -352,7 +352,7 @@
                   <div class="meal-badge ${o.meal_type}">${mealEmoji(o.meal_type)}</div>
                   <div class="info">
                     <div class="date">${fmtFull(o.service_date)} · ${mealLabel(o.meal_type)}</div>
-                    <div class="menu">${escape(o.menu)}</div>
+                    <div class="menu">${o.selection ? escape(summarizeSelection(o.selection)) : escape(o.menu)}</div>
                   </div>
                   <span class="view-hint">바코드 ›</span>
                 </button>
@@ -1145,46 +1145,46 @@
   }
 
   // Build a short summary string from a structured breakfast selection (client-side)
+  function summarizeCatChoice(cc) {
+    const cat = breakfastStructure.find(c => c.id === Number(cc.category_id));
+    const emoji = (cat && cat.emoji) || cc.category_emoji || '';
+    const name = (cat && cat.name) || cc.category_name || '';
+    const parts = [];
+    for (const s of (cc.slots || [])) {
+      if (s.fixed) { parts.push(s.fixed); continue; }
+      const pri = Array.isArray(s.priority) ? s.priority : [];
+      let txt = pri.join('→');
+      if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
+      if (txt) parts.push(txt);
+    }
+    const detail = parts.join(' | ');
+    return detail ? `${emoji}${name} · ${detail}` : `${emoji}${name}`;
+  }
+
   function summarizeSelection(sel) {
     if (!sel) return '';
     if (sel.meal_form === 'kimbap') {
-      return `[김밥/주먹밥] ${sel.kimbap_choice || ''}`;
+      return `🍙 ${sel.kimbap_choice || ''}`;
     }
     if (sel.meal_form === 'snack_pick') {
       const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
       if (prios.length === 0) return '';
-      const tiers = prios.map((cc, i) => {
-        const cat = breakfastStructure.find(c => c.id === Number(cc.category_id));
-        const catName = (cat && cat.name) || cc.category_name || '';
-        const slotParts = [];
-        for (const s of (cc.slots || [])) {
-          if (s.fixed) continue;
-          const pri = Array.isArray(s.priority) ? s.priority : [];
-          let txt = '';
-          if (pri.length === 1) txt = pri[0];
-          else if (pri.length > 1) txt = pri.join('→');
-          if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
-          if (txt) slotParts.push(txt);
-        }
-        return `${i + 1}순위 ${catName}${slotParts.length ? `(${slotParts.join(' · ')})` : ''}`;
-      }).join(' → ');
-      const tail = sel.fallback_any ? ' → 없으면 아무거나' : '';
-      return `[스낵픽] ${tiers}${tail}`;
+      const tiers = prios.map((cc, i) => `${i + 1}순위 ${summarizeCatChoice(cc)}`).join(' → ');
+      const tail = sel.fallback_any ? ' → 🎲아무거나' : '';
+      return `🥣 ${tiers}${tail}`;
     }
-    // Legacy fallback (old schema with category_id at top level)
+    // Legacy fallback
     const cat = breakfastStructure.find(c => c.id === Number(sel.category_id));
-    const catName = (cat && cat.name) || sel.category_name || '';
+    const name = (cat && cat.name) || sel.category_name || '';
     const parts = [];
-    const slots = Array.isArray(sel.slots) ? sel.slots : [];
-    for (const s of slots) {
+    for (const s of (Array.isArray(sel.slots) ? sel.slots : [])) {
+      if (s.fixed) continue;
       const pri = Array.isArray(s.priority) ? s.priority : [];
-      let txt = '';
-      if (pri.length === 1) txt = pri[0];
-      else if (pri.length > 1) txt = pri.join('→');
+      let txt = pri.join('→');
       if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
       if (txt) parts.push(txt);
     }
-    return `[${catName}] ${parts.join(' · ')}`;
+    return `${name}${parts.length ? ' · ' + parts.join(' | ') : ''}`;
   }
 
   function goHome() {
@@ -1477,24 +1477,27 @@
       if (sel.meal_form === 'snack_pick') {
         const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
         const parts = prios.map((cc, i) => {
-          const allSlots = cc.slots || [];
-          const chosen = allSlots.filter(s => !s.fixed).map(s => {
+          const cat = breakfastStructure.find(c => c.id === Number(cc.category_id));
+          const emoji = (cat && cat.emoji) || cc.category_emoji || '';
+          const name = escape((cat && cat.name) || cc.category_name || '');
+          const optParts = (cc.slots || []).map(s => {
+            if (s.fixed) return s.fixed;
             const pri = Array.isArray(s.priority) ? s.priority : [];
-            return pri.slice(0, 2).join('→');
-          }).filter(Boolean).join(' ');
-          const fixed = allSlots.filter(s => s.fixed && s.fixed !== '음료' && s.fixed !== s.slot_name)
-            .map(s => escape(s.fixed)).join(' · ');
-          const detail = [chosen, fixed ? `(${fixed})` : ''].filter(Boolean).join(' ');
+            let txt = pri.join('→');
+            if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
+            return txt;
+          }).filter(Boolean);
+          const detail = optParts.join(' | ');
           const label = detail ? ` · ${detail}` : '';
-          return `<span class="vc-tier-chip ${i === 0 ? 'primary' : 'secondary'}">${i+1}순위 ${escape(cc.category_name || '')}${label}</span>`;
+          return `<span class="vc-tier-chip ${i === 0 ? 'primary' : 'secondary'}">${i+1}순위 ${emoji}${name}${label}</span>`;
         }).join('');
-        const note = sel.note ? ` <span class="vc-note">📝 ${escape(sel.note)}</span>` : '';
         const fallback = sel.fallback_any ? ' <span class="vc-note">🎲 아무거나OK</span>' : '';
+        const note = sel.note ? ` <span class="vc-note">📝 ${escape(sel.note)}</span>` : '';
         return parts + fallback + note;
       }
       if (Array.isArray(sel.slots)) {
         const parts = sel.slots.filter(s => !s.fixed && Array.isArray(s.priority) && s.priority.length)
-          .map(s => s.priority.slice(0, 2).join('→')).join(' · ');
+          .map(s => s.priority.join('→')).join(' | ');
         return `${sel.category_name ? escape(sel.category_name) + ' · ' : ''}${parts}${sel.note ? ` 📝 ${escape(sel.note)}` : ''}`;
       }
     }
@@ -1602,16 +1605,22 @@
       }
       if (sel.meal_form === 'snack_pick') {
         const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
-        // Show: "1순위 카테고리명 · 2순위 카테고리명" on one line, slots as compact chips below
-        const tierLine = prios.map((cc, i) => `<span class="d-rank">${i+1}</span>${escape(cc.category_name || '')}`).join(' <span class="sep">·</span> ');
-        // Flatten key slots (non-fixed, first priority only) into one line
-        const slotLine = prios.slice(0, 1).flatMap(cc =>
-          (cc.slots || []).filter(s => !s.fixed && Array.isArray(s.priority) && s.priority.length).map(s =>
-            `${escape(s.slot_name)}: ${escape(s.priority[0])}${s.priority[1] ? `→${escape(s.priority[1])}` : ''}`
-          )
-        ).join(' · ');
+        const tierLine = prios.map((cc, i) => {
+          const cat = breakfastStructure.find(c => c.id === Number(cc.category_id));
+          const emoji = (cat && cat.emoji) || cc.category_emoji || '';
+          const name = escape((cat && cat.name) || cc.category_name || '');
+          const optParts = (cc.slots || []).map(s => {
+            if (s.fixed) return s.fixed;
+            const pri = Array.isArray(s.priority) ? s.priority : [];
+            let txt = pri.join('→');
+            if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
+            return txt;
+          }).filter(Boolean);
+          const detail = optParts.join(' | ');
+          return `<span class="d-rank">${i+1}</span>${emoji}${name}${detail ? ' · ' + detail : ''}`;
+        }).join(' <span class="sep">→</span> ');
         const extra = (sel.fallback_any ? ' 🎲' : '') + (sel.note ? ` 📝${escape(sel.note)}` : '');
-        return `<div class="order-menu compact"><span class="tier-inline">${tierLine}</span>${slotLine ? `<br><span class="slot-inline">${slotLine}${extra}</span>` : extra}</div>`;
+        return `<div class="order-menu compact"><span class="tier-inline">🥣 ${tierLine}${extra}</span></div>`;
       }
       // Legacy slots
       if (Array.isArray(sel.slots)) {
