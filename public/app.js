@@ -1158,8 +1158,8 @@
           const pri = Array.isArray(s.priority) ? s.priority : [];
           let txt = '';
           if (pri.length === 1) txt = pri[0];
-          else if (pri.length > 1) txt = pri.map((v, i) => `${v}(${i + 1})`).join('/');
-          if (s.any) txt = txt ? `${txt} or 아무거나` : '아무거나';
+          else if (pri.length > 1) txt = pri.join('→');
+          if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
           if (txt) slotParts.push(txt);
         }
         return `${i + 1}순위 ${catName}${slotParts.length ? `(${slotParts.join(' · ')})` : ''}`;
@@ -1176,8 +1176,8 @@
       const pri = Array.isArray(s.priority) ? s.priority : [];
       let txt = '';
       if (pri.length === 1) txt = pri[0];
-      else if (pri.length > 1) txt = pri.map((v, i) => `${v}(${i + 1})`).join('/');
-      if (s.any) txt = txt ? `${txt} or 아무거나` : '아무거나';
+      else if (pri.length > 1) txt = pri.join('→');
+      if (s.any) txt = txt ? `${txt}→아무거나` : '아무거나';
       if (txt) parts.push(txt);
     }
     return `[${catName}] ${parts.join(' · ')}`;
@@ -1476,7 +1476,7 @@
           const slots = (cc.slots || []).filter(s => !s.fixed);
           const slotSummary = slots.map(s => {
             const pri = Array.isArray(s.priority) ? s.priority : [];
-            return pri.slice(0, 2).join('/');
+            return pri.slice(0, 2).join('→');
           }).filter(Boolean).join(' ');
           return `<span class="vc-tier-chip ${i === 0 ? 'primary' : 'secondary'}">${i+1}순위 ${escape(cc.category_name || '')}${slotSummary ? ` · ${slotSummary}` : ''}</span>`;
         }).join('');
@@ -1486,7 +1486,7 @@
       }
       if (Array.isArray(sel.slots)) {
         const parts = sel.slots.filter(s => !s.fixed && Array.isArray(s.priority) && s.priority.length)
-          .map(s => s.priority.slice(0, 2).join('/')).join(' · ');
+          .map(s => s.priority.slice(0, 2).join('→')).join(' · ');
         return `${sel.category_name ? escape(sel.category_name) + ' · ' : ''}${parts}${sel.note ? ` 📝 ${escape(sel.note)}` : ''}`;
       }
     }
@@ -1599,7 +1599,7 @@
         // Flatten key slots (non-fixed, first priority only) into one line
         const slotLine = prios.slice(0, 1).flatMap(cc =>
           (cc.slots || []).filter(s => !s.fixed && Array.isArray(s.priority) && s.priority.length).map(s =>
-            `${escape(s.slot_name)}: ${escape(s.priority[0])}${s.priority[1] ? `/${escape(s.priority[1])}` : ''}`
+            `${escape(s.slot_name)}: ${escape(s.priority[0])}${s.priority[1] ? `→${escape(s.priority[1])}` : ''}`
           )
         ).join(' · ');
         const extra = (sel.fallback_any ? ' 🎲' : '') + (sel.note ? ` 📝${escape(sel.note)}` : '');
@@ -1608,7 +1608,7 @@
       // Legacy slots
       if (Array.isArray(sel.slots)) {
         const parts = sel.slots.filter(s => !s.fixed && Array.isArray(s.priority) && s.priority.length).map(s =>
-          `${escape(s.slot_name)}: ${escape(s.priority[0])}${s.priority[1] ? `/${escape(s.priority[1])}` : ''}`
+          `${escape(s.slot_name)}: ${escape(s.priority[0])}${s.priority[1] ? `→${escape(s.priority[1])}` : ''}`
         ).join(' · ');
         const catLabel = sel.category_name ? `[${escape(sel.category_name)}] ` : '';
         return `<div class="order-menu compact">${catLabel}${parts}${sel.note ? ` 📝${escape(sel.note)}` : ''}</div>`;
@@ -1684,7 +1684,7 @@
       try {
         JsBarcode(card.querySelector('.barcode-svg'), String(order.employee_id || user.employee_id), {
           format: 'CODE128', displayValue: false,
-          height: 100, margin: 4, background: '#ffffff', lineColor: '#000000',
+          height: 60, margin: 4, background: '#ffffff', lineColor: '#000000',
         });
       } catch (e) { console.error('barcode error', e); }
 

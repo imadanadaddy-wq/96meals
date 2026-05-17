@@ -162,6 +162,7 @@ db.exec(`
     { name: '햄버거/샌드위치', emoji: '🍔', slots: [
       { name: '메인', options: ['햄버거', '샌드위치'] },
       { name: '음료', is_fixed: 1, fixed_text: '음료' },
+      { name: '계란', is_fixed: 1, fixed_text: '계란 2개' },
     ]},
     { name: '닭가슴살', emoji: '🍗', slots: [
       { name: '닭가슴살', is_fixed: 1, fixed_text: '닭가슴살' },

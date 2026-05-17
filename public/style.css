@@ -535,13 +535,13 @@ input, textarea { font-family: inherit; }
 
 .barcode-wrap {
   margin-top: 10px;
-  padding: 12px 0 4px;
+  padding: 8px 24px 2px;
   background: #fff;
   display: flex;
   flex-direction: column;
   align-items: center;
 }
-.barcode-wrap svg { width: 100%; height: auto; }
+.barcode-wrap svg { width: 80%; max-width: 260px; height: auto; }
 
 .modal-actions {
   display: flex;
@@ -1511,13 +1511,14 @@ input, textarea { font-family: inherit; }
 }
 .vc-menu-summary {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
   padding: 10px 0 4px;
   font-size: 13px;
   color: #555;
-  min-height: 32px;
+  min-height: 24px;
+  width: 100%;
 }
 .vc-tier-chip {
   display: inline-flex;
@@ -1662,6 +1663,7 @@ input, textarea { font-family: inherit; }
   border-radius: 12px;
   padding: 10px 12px;
   border-left: 4px solid #f5a524;
+  margin-bottom: 8px;
 }
 .vtier-card.secondary {
   border-left-color: #d1d5db;
