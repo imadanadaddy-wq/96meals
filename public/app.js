@@ -2125,86 +2125,193 @@
   }
 
   function _renderAdminBfTier(area) {
-    // Simplified: reuse existing renderBfTier logic inline but target area
-    // We call the real renderBfTier which uses root; instead we replicate key parts
-    const cats = breakfastStructure.filter(c => c.active !== false);
-    const curTier = draftPriorities[draftBuildingTier];
-    const remainingCats = breakfastStructure.filter(c =>
-      c.active !== false && !draftPriorities.slice(0, draftBuildingTier).some(p => p.category_id === c.id)
+    const tier = draftPriorities[draftBuildingTier];
+    if (!tier) { bfStep = 'form'; _areaRefreshBf(); return; }
+
+    // Phase A: 카테고리 아직 미선택 → 카테고리 피커
+    if (!tier.category_id) {
+      _renderAdminBfCatPicker(area, tier);
+      return;
+    }
+
+    // Phase B: 카테고리 선택됨 → 슬롯 에디터
+    _renderAdminBfSlotEditor(area, tier);
+  }
+
+  function _renderAdminBfCatPicker(area, tier) {
+    const usedCatIds = new Set(
+      draftPriorities.slice(0, draftBuildingTier).map(p => p.category_id).filter(Boolean)
     );
+    const availableCats = breakfastStructure.filter(c => c.active !== false && !usedCatIds.has(c.id));
 
     area.innerHTML = `
       <div class="card step-card" style="margin:0;">
-        <h2 class="step-h">${draftBuildingTier === 0 ? '1순위 선택' : `${draftBuildingTier+1}순위 선택`}</h2>
-        <p class="step-desc">카테고리를 선택하세요</p>
-        <div class="choice-grid" style="margin-top:8px;">
-          ${remainingCats.map(c => `
-            <button class="choice-card breakfast ${curTier && curTier.category_id===c.id?'selected':''}" data-cat="${c.id}">
-              <span class="name">${escape(c.name)}</span>
+        <h2 class="step-h">${tierLabel(draftBuildingTier)} 대분류</h2>
+        <p class="step-desc">${draftBuildingTier === 0 ? '먼저 받고 싶은 종류를 골라주세요.' : '이전 대분류가 없을 때 받을 종류를 골라주세요.'}</p>
+        <div class="cat-grid" style="margin-top:8px;">
+          ${availableCats.map(c => `
+            <button class="cat-card" data-cat="${c.id}">
+              <span class="cat-emoji">${c.emoji || '🍽️'}</span>
+              <span class="cat-name">${escape(c.name)}</span>
             </button>
           `).join('')}
         </div>
       </div>
-      <div class="step-action" style="padding:12px 0 0;display:flex;gap:8px;">
-        <button class="btn btn-ghost" id="aBfTierBack">← 뒤로</button>
-        <button class="btn btn-primary" id="aBfTierNext">다음 →</button>
+      <div class="step-action" style="padding:12px 0 0;">
+        <button class="btn btn-ghost" id="aBfCatBack">← 뒤로</button>
       </div>
     `;
     area.querySelectorAll('[data-cat]').forEach(b =>
       b.addEventListener('click', () => {
-        const catId = Number(b.dataset.cat);
-        if (!draftPriorities[draftBuildingTier]) draftPriorities[draftBuildingTier] = { category_id: catId, slots: {} };
-        else draftPriorities[draftBuildingTier].category_id = catId;
+        tier.category_id = Number(b.dataset.cat);
+        tier.slots = {};
         _renderAdminBfTier(area);
       }));
-    document.getElementById('aBfTierBack').addEventListener('click', () => {
-      if (draftBuildingTier > 0) { draftBuildingTier--; } else { bfStep = 'form'; }
+    document.getElementById('aBfCatBack').addEventListener('click', () => {
+      if (draftBuildingTier > 0) {
+        draftPriorities.pop();
+        draftBuildingTier--;
+        bfStep = 'fallback';
+      } else {
+        if (!tier.category_id) draftPriorities.pop();
+        bfStep = 'form';
+      }
       _areaRefreshBf();
     });
-    document.getElementById('aBfTierNext').addEventListener('click', () => {
-      if (!curTier || !curTier.category_id) { toast('카테고리를 선택해주세요'); return; }
-      // Move to next tier or fallback
-      if (draftBuildingTier < cats.length - 1) {
-        draftBuildingTier++;
-        ensureTierDraft();
-        _areaRefreshBf();
-      } else {
-        bfStep = 'fallback';
-        _areaRefreshBf();
-      }
+  }
+
+  function _renderAdminBfSlotEditor(area, tier) {
+    const cat = breakfastStructure.find(c => c.id === tier.category_id);
+    if (!cat) { tier.category_id = null; _renderAdminBfTier(area); return; }
+    const optionSlots = (cat.slots || []).filter(s => !s.is_fixed);
+    const fixedSlots = (cat.slots || []).filter(s => s.is_fixed);
+    const incomplete = optionSlots.some(s => {
+      const sel = tier.slots[s.id] || {};
+      const pri = Array.isArray(sel.priority) ? sel.priority : [];
+      return pri.length === 0 && !sel.any;
+    });
+
+    area.innerHTML = `
+      <div class="card step-card" style="margin:0;">
+        <div class="cat-header">
+          <span class="cat-header-emoji">${cat.emoji || '🍽️'}</span>
+          <div class="cat-header-text">
+            <div class="cat-header-name">${tierLabel(draftBuildingTier)} · ${escape(cat.name)}</div>
+            <div class="cat-header-sub">슬롯별로 우선순위를 선택하세요.</div>
+          </div>
+          <button class="btn-ghost btn-sm cat-change" id="aChangeCat">변경</button>
+        </div>
+        ${optionSlots.length === 0 ? `
+          <div class="empty" style="margin-top:14px;">
+            <span class="empty-emoji">✅</span>선택할 옵션이 없어요. 다음으로 진행하세요.
+          </div>
+        ` : optionSlots.map(s => renderSlotEditor(s, tier)).join('')}
+        ${fixedSlots.length > 0 ? `
+          <div class="fixed-block">
+            <div class="fixed-label">기본 포함</div>
+            <div class="fixed-list">
+              ${fixedSlots.map(s => `<span class="fixed-chip">${escape(s.fixed_text || s.name)}</span>`).join('')}
+            </div>
+          </div>
+        ` : ''}
+      </div>
+      <div class="step-action" style="padding:12px 0 0;">
+        <button class="btn btn-primary" id="aBfSlotNext" ${incomplete ? 'disabled' : ''}>
+          ${incomplete ? '모든 슬롯을 선택해주세요' : '다음으로'}
+        </button>
+      </div>
+    `;
+
+    document.getElementById('aChangeCat').addEventListener('click', () => {
+      tier.category_id = null; tier.slots = {};
+      _renderAdminBfTier(area);
+    });
+
+    area.querySelectorAll('[data-slot-opt]').forEach(b =>
+      b.addEventListener('click', () => {
+        const slotId = Number(b.dataset.slot);
+        const opt = b.dataset.slotOpt;
+        const cur = tier.slots[slotId] || { priority: [], any: false };
+        const i = cur.priority.indexOf(opt);
+        if (i >= 0) cur.priority.splice(i, 1);
+        else cur.priority.push(opt);
+        tier.slots[slotId] = cur;
+        _renderAdminBfSlotEditor(area, tier);
+      }));
+
+    area.querySelectorAll('[data-slot-any]').forEach(b =>
+      b.addEventListener('click', () => {
+        const slotId = Number(b.dataset.slot);
+        const cur = tier.slots[slotId] || { priority: [], any: false };
+        cur.any = !cur.any;
+        tier.slots[slotId] = cur;
+        _renderAdminBfSlotEditor(area, tier);
+      }));
+
+    document.getElementById('aBfSlotNext').addEventListener('click', () => {
+      if (incomplete) return;
+      bfStep = 'fallback';
+      _areaRefreshBf();
     });
   }
 
   function _renderAdminBfFallback(area) {
+    const curTier = draftPriorities[draftBuildingTier];
+    const cat = curTier ? breakfastStructure.find(c => c.id === curTier.category_id) : null;
+    const curName = cat ? cat.name : '?';
+    const remainingCats = breakfastStructure.filter(c =>
+      c.active !== false && !draftPriorities.slice(0, draftBuildingTier + 1).some(p => p.category_id === c.id)
+    );
+    const canAddMore = remainingCats.length > 0 && draftPriorities.length < 5;
+
     area.innerHTML = `
       <div class="card step-card" style="margin:0;">
-        <h2 class="step-h">모두 소진 시</h2>
-        <div class="choice-grid" style="margin-top:8px;">
-          <button class="choice-card breakfast ${!draftFallbackAny?'selected':''}" data-fb="0">
-            <span class="name">안 받음</span>
-            <span class="count">순위 메뉴 없으면 신청 안 받음</span>
+        <h2 class="step-h">📍 ${escape(curName)}도 없으면?</h2>
+        <p class="step-desc">대분류 자체가 품절일 때 추가 옵션을 정하세요.</p>
+        <div class="fallback-grid" style="margin-top:8px;">
+          ${canAddMore ? `
+            <button class="fallback-card" data-fb="next">
+              <span class="fb-emoji">➕</span>
+              <span class="fb-name">${tierLabel(draftBuildingTier + 1)} 추가하기</span>
+              <span class="fb-desc">다른 대분류를 ${tierLabel(draftBuildingTier + 1)}로 지정</span>
+            </button>
+          ` : ''}
+          <button class="fallback-card" data-fb="any">
+            <span class="fb-emoji">🎲</span>
+            <span class="fb-name">아무거나 받기</span>
+            <span class="fb-desc">액팅이 남아있는 거 골라서 가져옴</span>
           </button>
-          <button class="choice-card late_night ${draftFallbackAny?'selected':''}" data-fb="1">
-            <span class="name">아무거나</span>
-            <span class="count">남은 거 아무거나 받음</span>
+          <button class="fallback-card" data-fb="stop">
+            <span class="fb-emoji">🛑</span>
+            <span class="fb-name">여기까지만</span>
+            <span class="fb-desc">${escape(curName)}이(가) 없으면 신청 안 받음</span>
           </button>
         </div>
       </div>
-      <div class="step-action" style="padding:12px 0 0;display:flex;gap:8px;">
+      <div class="step-action" style="padding:12px 0 0;">
         <button class="btn btn-ghost" id="aBfFbBack">← 뒤로</button>
-        <button class="btn btn-primary" id="aBfFbNext">다음 →</button>
       </div>
     `;
     area.querySelectorAll('[data-fb]').forEach(b =>
       b.addEventListener('click', () => {
-        draftFallbackAny = b.dataset.fb === '1';
-        _renderAdminBfFallback(area);
+        const action = b.dataset.fb;
+        if (action === 'next') {
+          draftBuildingTier++;
+          ensureTierDraft();
+          bfStep = 'tier';
+        } else if (action === 'any') {
+          draftFallbackAny = true;
+          bfStep = 'note';
+        } else {
+          draftFallbackAny = false;
+          bfStep = 'note';
+        }
+        _areaRefreshBf();
       }));
     document.getElementById('aBfFbBack').addEventListener('click', () => {
-      bfStep = 'tier'; draftBuildingTier = draftPriorities.length - 1; _areaRefreshBf();
-    });
-    document.getElementById('aBfFbNext').addEventListener('click', () => {
-      bfStep = 'note'; _areaRefreshBf();
+      // 슬롯 에디터로 돌아감
+      bfStep = 'tier';
+      _areaRefreshBf();
     });
   }
 
