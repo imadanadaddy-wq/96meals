@@ -1298,35 +1298,31 @@
     else renderActingList();
   }
 
-  // Renders a single category choice (one priority tier) on light surface
+  // Renders a single category choice (one priority tier) on light surface — compact card for horizontal scroll
   function renderCategoryChoiceLight(cc, tierIdx) {
     const catName = cc.category_name || '';
     const catEmoji = cc.category_emoji || '🍽️';
     const slots = cc.slots || [];
 
-    // Choice slots: each gets its own row
     const choiceRows = slots.filter(s => !s.fixed).map(s => {
       const pri = Array.isArray(s.priority) ? s.priority : [];
       const priHtml = pri.map((v, i) => `<span class="det-pri"><span class="det-rank">${i+1}</span>${escape(v)}</span>`).join('');
       const anyHtml = s.any ? `<span class="det-any">아무거나 OK</span>` : '';
-      return `<li class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val">${priHtml}${anyHtml || (pri.length === 0 ? '<span class="det-empty">—</span>' : '')}</span></li>`;
+      return `<div class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val">${priHtml}${anyHtml || (pri.length === 0 ? '<span class="det-empty">—</span>' : '')}</span></div>`;
     }).join('');
 
-    // Fixed slots: all on one line as chips
     const fixedSlots = slots.filter(s => s.fixed);
-    const fixedHtml = fixedSlots.length ? `
-      <div class="det-fixed-row">
-        ${fixedSlots.map(s => `<span class="det-fixed-chip">${escape(s.slot_name ? s.slot_name + ': ' : '')}${escape(s.fixed)}</span>`).join('')}
-      </div>
-    ` : '';
+    const fixedHtml = fixedSlots.length
+      ? `<div class="det-fixed-row">${fixedSlots.map(s => `<span class="det-fixed-chip">${escape(s.slot_name ? s.slot_name + ': ' : '')}${escape(s.fixed)}</span>`).join('')}</div>`
+      : '';
 
     return `
-      <div class="tier-section ${tierIdx === 0 ? 'tier-primary' : 'tier-secondary'}">
+      <div class="tier-card ${tierIdx === 0 ? 'tier-primary' : 'tier-secondary'}">
         <div class="tier-head">
           <span class="tier-badge">${tierIdx + 1}순위</span>
           <span class="tier-cat">${catEmoji} ${escape(catName)}</span>
         </div>
-        ${choiceRows ? `<ul class="det-list">${choiceRows}</ul>` : ''}
+        ${choiceRows}
         ${fixedHtml}
       </div>
     `;
@@ -1352,12 +1348,11 @@
           ? `<div class="fallback-note"><span class="fb-icon">🎲</span> 위 메뉴들이 모두 없으면 <strong>아무거나</strong> 받아가셔도 OK</div>`
           : '';
         return `
-          <div class="id-menu id-menu-struct">
-            <span class="label">🥣 스낵픽</span>
+          <div class="tier-scroll-wrap">
             ${tiersHtml}
-            ${fallbackHtml}
-            ${sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : ''}
           </div>
+          ${fallbackHtml}
+          ${sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : ''}
         `;
       }
       // Legacy schema (single category)
@@ -1467,19 +1462,20 @@
       if (animDir > 0) card.classList.add('enter-right');
       else if (animDir < 0) card.classList.add('enter-left');
       card.innerHTML = `
-        <div class="modal-header">
-          <div class="modal-title">${mealEmoji(order.meal_type)} ${mealLabel(order.meal_type)} · ${fmtDate(order.service_date, { withMonth: true })}</div>
+        <div class="modal-compact-header">
+          <div class="modal-compact-left">
+            <span class="id-name-sm">${escape(order.name || user.name)}</span>
+            <span class="id-eid-sm">사번 ${escape(order.employee_id || user.employee_id)}</span>
+          </div>
+          <div class="modal-compact-center">
+            ${mealEmoji(order.meal_type)} ${mealLabel(order.meal_type)} · ${fmtDate(order.service_date, { withMonth: true })}
+          </div>
           <button class="modal-close" data-action="close" aria-label="닫기">✕</button>
         </div>
-        <div class="id-name">${escape(order.name || user.name)}</div>
-        <div class="id-eid">사번 ${escape(order.employee_id || user.employee_id)}</div>
+        ${renderOrderDetailLight(order)}
         <div class="barcode-wrap">
           <svg class="barcode-svg"></svg>
         </div>
-        <details class="menu-details">
-          <summary class="menu-details-summary">메뉴 보기 ▾</summary>
-          ${renderOrderDetailLight(order)}
-        </details>
         <div class="modal-actions">
           <button class="btn btn-ghost-light" data-action="close">닫기</button>
           ${allowPickup ? `<button class="btn" data-action="pickup">수령 완료 · 다음</button>` : ''}
