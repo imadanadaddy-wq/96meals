@@ -334,19 +334,29 @@
       ` : `
         <div class="section-title" style="margin-top:14px;">
           <h2>내 신청 현황</h2>
-          <span class="hint">탭하면 바코드 · ${sorted.length}건</span>
+          <span class="hint">${sorted.some(o => o.meal_type === 'breakfast') ? `탭하면 바코드 · ` : ''}${sorted.length}건</span>
         </div>
         <div class="my-orders-list">
           ${sorted.map((o, i) => `
             <div class="my-order-row">
-              <button class="my-order-main" data-view-idx="${i}">
-                <div class="meal-badge ${o.meal_type}">${mealEmoji(o.meal_type)}</div>
-                <div class="info">
-                  <div class="date">${fmtFull(o.service_date)} · ${mealLabel(o.meal_type)}</div>
-                  <div class="menu">${escape(o.menu)}</div>
+              ${o.meal_type === 'late_night' ? `
+                <div class="my-order-main my-order-static">
+                  <div class="meal-badge ${o.meal_type}">${mealEmoji(o.meal_type)}</div>
+                  <div class="info">
+                    <div class="date">${fmtFull(o.service_date)} · ${mealLabel(o.meal_type)}</div>
+                    <div class="menu">${escape(o.menu)}</div>
+                  </div>
                 </div>
-                <span class="view-hint">바코드 ›</span>
-              </button>
+              ` : `
+                <button class="my-order-main" data-view-idx="${i}">
+                  <div class="meal-badge ${o.meal_type}">${mealEmoji(o.meal_type)}</div>
+                  <div class="info">
+                    <div class="date">${fmtFull(o.service_date)} · ${mealLabel(o.meal_type)}</div>
+                    <div class="menu">${escape(o.menu)}</div>
+                  </div>
+                  <span class="view-hint">바코드 ›</span>
+                </button>
+              `}
               <button class="x" data-cancel-id="${o.id}" title="취소">✕</button>
             </div>
           `).join('')}
@@ -1655,6 +1665,8 @@
       if (idx < 0) idx = 0;
       const order = orders[idx];
 
+      const isLateNight = order.meal_type === 'late_night';
+
       const card = document.createElement('div');
       card.className = 'viewer-card';
       if (animDir > 0) card.classList.add('enter-right');
@@ -1666,10 +1678,16 @@
         </div>
         <div class="vc-name">${escape(order.name || user.name)}</div>
         <div class="vc-eid">사번 ${escape(order.employee_id || user.employee_id)}</div>
-        <div class="barcode-wrap">
-          <svg class="barcode-svg"></svg>
-        </div>
-        <div class="vc-menu-summary">${renderMenuOneLine(order)}</div>
+        ${isLateNight ? `
+          <div class="late-night-menu-block">
+            <div class="late-night-menu-text">${escape(order.menu || '')}</div>
+          </div>
+        ` : `
+          <div class="barcode-wrap">
+            <svg class="barcode-svg"></svg>
+          </div>
+          <div class="vc-menu-summary">${renderMenuOneLine(order)}</div>
+        `}
         <div class="modal-actions">
           <button class="btn btn-ghost-light" data-action="close">닫기</button>
           ${allowPickup ? `<button class="btn" data-action="pickup">수령 완료 · 다음</button>` : ''}
@@ -1679,12 +1697,14 @@
       content.innerHTML = '';
       content.appendChild(card);
 
-      try {
-        JsBarcode(card.querySelector('.barcode-svg'), String(order.employee_id || user.employee_id), {
-          format: 'CODE128', displayValue: false,
-          height: 60, margin: 4, background: '#ffffff', lineColor: '#000000',
-        });
-      } catch (e) { console.error('barcode error', e); }
+      if (!isLateNight) {
+        try {
+          JsBarcode(card.querySelector('.barcode-svg'), String(order.employee_id || user.employee_id), {
+            format: 'CODE128', displayValue: false,
+            height: 90, margin: 6, background: '#ffffff', lineColor: '#000000',
+          });
+        } catch (e) { console.error('barcode error', e); }
+      }
 
       countEl.textContent = orders.length > 1 ? `${idx + 1} / ${orders.length}` : '';
       prevBtn.style.visibility = orders.length > 1 ? 'visible' : 'hidden';
@@ -1839,8 +1859,8 @@
 
   function renderAdminManual() {
     $('#adminBody').innerHTML = `
-      <div class="section-title"><h2>야식 수동 입력 (백업 데이터 복원용)</h2></div>
-      <p style="color:var(--muted);font-size:13px;margin:0 4px 12px;">사번·이름·날짜·메뉴를 직접 입력해서 야식 신청을 생성합니다.</p>
+      <div class="section-title"><h2>수동 신청 입력</h2></div>
+      <p style="color:var(--muted);font-size:13px;margin:0 4px 12px;">사번·이름·날짜·메뉴를 직접 입력해서 신청을 생성합니다.</p>
       <div class="manual-form">
         <div class="manual-row">
           <input class="input" id="mEmpId" maxlength="10" placeholder="사번 (예: 12345)" inputmode="numeric" />
@@ -1848,14 +1868,19 @@
         </div>
         <div class="manual-row">
           <input class="input" id="mDate" type="date" />
-          <input class="input" id="mMenu" maxlength="200" placeholder="메뉴 (예: 컵라면)" />
+          <select class="input" id="mMealType">
+            <option value="breakfast">🍳 조식</option>
+            <option value="late_night">🍜 야식</option>
+          </select>
+        </div>
+        <div class="manual-row">
+          <input class="input" id="mMenu" maxlength="200" placeholder="메뉴 (예: 선식·우유·계란2개 / 컵라면)" style="flex:1;" />
         </div>
         <button class="btn btn-primary" id="mAddBtn">등록</button>
       </div>
       <div id="manualLog" style="margin-top:12px;font-size:13px;"></div>
     `;
 
-    // Set default date to today
     const todayInput = new Date().toISOString().slice(0, 10);
     $('#mDate').value = todayInput;
 
@@ -1863,6 +1888,7 @@
       const employee_id = $('#mEmpId').value.trim();
       const name = $('#mName').value.trim();
       const service_date = $('#mDate').value.trim();
+      const meal_type = $('#mMealType').value;
       const menu = $('#mMenu').value.trim();
       const log = $('#manualLog');
       if (!employee_id || !name || !service_date || !menu) {
@@ -1871,10 +1897,11 @@
       try {
         const res = await api('/api/admin/orders/manual', {
           method: 'POST',
-          body: JSON.stringify({ employee_id, name, meal_type: 'late_night', menu, service_date })
+          body: JSON.stringify({ employee_id, name, meal_type, menu, service_date })
         });
         const msg = res.action === 'created' ? '✅ 등록됨' : '🔄 수정됨';
-        log.innerHTML = `<div style="color:var(--accent);margin-bottom:6px;">${msg} — ${escape(name)}(${escape(employee_id)}) ${service_date} ${escape(menu)}</div>` + log.innerHTML;
+        const mealBadge = meal_type === 'breakfast' ? '🍳 조식' : '🍜 야식';
+        log.innerHTML = `<div style="color:var(--accent);margin-bottom:6px;">${msg} — ${mealBadge} ${escape(name)}(${escape(employee_id)}) ${service_date} ${escape(menu)}</div>` + log.innerHTML;
         $('#mEmpId').value = '';
         $('#mName').value = '';
         $('#mMenu').value = '';
