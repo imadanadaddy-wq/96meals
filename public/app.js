@@ -40,6 +40,7 @@
   let actingStep = 'choose';
   let actingMealType = null;
   let actingDate = null;
+  let actingFilter = 'all'; // 'all' | 'snack_pick' | 'kimbap' | 'no_meal'
   let activeOrders = [];
   let activeSummary = [];
 
@@ -557,6 +558,7 @@
     // bfStep initial = 'form'
     if (!bfStep) bfStep = 'form';
     if (bfStep === 'form') return renderBfForm();
+    if (bfStep === 'no_meal') return renderBfNoMeal();
     if (bfStep === 'kimbap') return renderBfKimbap();
     if (bfStep === 'tier') return renderBfTier();
     if (bfStep === 'fallback') return renderBfFallback();
@@ -589,6 +591,14 @@
             <span class="count">요일별 고정 메뉴</span>
           </button>
         </div>
+
+        <button class="choice-card no-meal-card" data-form="no_meal" style="margin-top:10px;">
+          <span class="emoji">🚫</span>
+          <span style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;">
+            <span class="name">필요없어요</span>
+            <span class="count" style="text-align:left;">오늘은 안 받을게요 (출근은 함)</span>
+          </span>
+        </button>
       </div>
     `;
     $('#stepBack').addEventListener('click', () => { applicantStep = 'date'; renderApplicantStep(); });
@@ -596,7 +606,9 @@
       b.addEventListener('click', () => {
         const f = b.dataset.form;
         draftMealForm = f;
-        if (f === 'kimbap') {
+        if (f === 'no_meal') {
+          bfStep = 'no_meal';
+        } else if (f === 'kimbap') {
           bfStep = 'kimbap';
         } else {
           // Pre-fill from existing single-date order if same form
@@ -625,6 +637,42 @@
         }
         renderApplicantBreakfastMenu();
       }));
+  }
+
+  // ----- Step: no_meal (식사 안 받음) -----
+  function renderBfNoMeal() {
+    root.innerHTML = `
+      ${renderBrand()}
+      ${applicantHeader('🚫 식사 안 받음', { onBack: true, step: 3, totalSteps: 3 })}
+
+      <div class="card step-card">
+        <h2 class="step-h">출근은 하지만 식사는 안 받아요</h2>
+        <p class="step-desc">
+          이렇게 신청하면 액팅이 식사를 가져갈 필요는 없지만,
+          그 날의 멤버 명단에는 포함되어 인원 파악에 사용돼요.
+        </p>
+
+        <div class="field" style="margin-top:14px;margin-bottom:0;">
+          <label for="noteInput">메모 (선택)</label>
+          <textarea class="textarea" id="noteInput" maxlength="200"
+            placeholder="예: 외부 일정 / 다이어트 중 / 본인이 따로 챙김">${escape(draftNote)}</textarea>
+        </div>
+      </div>
+
+      <div class="step-action">
+        <button class="btn btn-primary" id="stepSubmit">
+          ${draftDates.length === 1 ? '신청하기' : `${draftDates.length}일 신청하기`}
+        </button>
+      </div>
+    `;
+    $('#stepBack').addEventListener('click', () => { bfStep = 'form'; renderApplicantBreakfastMenu(); });
+    const noteTa = $('#noteInput');
+    if (noteTa) noteTa.addEventListener('input', () => { draftNote = noteTa.value; });
+    $('#stepSubmit').addEventListener('click', async () => {
+      await submitOrders({
+        selection: { meal_form: 'no_meal', note: draftNote }
+      });
+    });
   }
 
   // ----- Step: kimbap pick -----
@@ -1208,20 +1256,62 @@
     const withOrders = new Set(
       activeSummary.filter(x => x.meal_type === actingMealType).map(x => x.service_date)
     );
-    const countOnDate = activeOrders.length;
 
-    // Breakfast breakdown: snack_pick vs kimbap
-    let breakdownHtml = '';
-    if (actingMealType === 'breakfast' && activeOrders.length > 0) {
-      const snackCount = activeOrders.filter(o => o.selection && o.selection.meal_form === 'snack_pick').length;
-      const kimbapCount = activeOrders.filter(o => o.selection && o.selection.meal_form === 'kimbap').length;
-      const otherCount = countOnDate - snackCount - kimbapCount;
-      const parts = [];
-      if (snackCount > 0) parts.push(`<span class="breakdown-chip snack">🥣 스낵픽 <strong>${snackCount}</strong></span>`);
-      if (kimbapCount > 0) parts.push(`<span class="breakdown-chip kimbap">🍙 밥 <strong>${kimbapCount}</strong></span>`);
-      if (otherCount > 0) parts.push(`<span class="breakdown-chip other">기타 <strong>${otherCount}</strong></span>`);
-      if (parts.length > 0) breakdownHtml = `<div class="order-breakdown">${parts.join('')}</div>`;
+    // Compute counts per category
+    const isBreakfast = actingMealType === 'breakfast';
+    const counts = {
+      all: activeOrders.length,
+      snack_pick: 0,
+      kimbap: 0,
+      no_meal: 0,
+      other: 0,
+    };
+    for (const o of activeOrders) {
+      const form = o.selection && o.selection.meal_form;
+      if (form === 'snack_pick') counts.snack_pick++;
+      else if (form === 'kimbap') counts.kimbap++;
+      else if (form === 'no_meal') counts.no_meal++;
+      else counts.other++;
     }
+
+    // Apply filter
+    const filtered = activeOrders.filter(o => {
+      if (actingFilter === 'all') return true;
+      const form = o.selection && o.selection.meal_form;
+      return form === actingFilter;
+    });
+
+    // Group orders (only relevant for breakfast and "all" view)
+    const groups = [];
+    if (isBreakfast && actingFilter === 'all') {
+      const byForm = { snack_pick: [], kimbap: [], no_meal: [], other: [] };
+      for (const o of filtered) {
+        const form = (o.selection && o.selection.meal_form) || 'other';
+        (byForm[form] || byForm.other).push(o);
+      }
+      if (byForm.snack_pick.length) groups.push({ key: 'snack_pick', label: '🥣 스낵픽', items: byForm.snack_pick });
+      if (byForm.kimbap.length) groups.push({ key: 'kimbap', label: '🍙 김밥/주먹밥', items: byForm.kimbap });
+      if (byForm.no_meal.length) groups.push({ key: 'no_meal', label: '🚫 미수령 (식사 안 받음)', items: byForm.no_meal });
+      if (byForm.other.length) groups.push({ key: 'other', label: '기타', items: byForm.other });
+    } else {
+      // Single-group view (filter selected) or non-breakfast
+      groups.push({ key: actingFilter, label: '', items: filtered });
+    }
+
+    // Pickup-able orders only (for viewer; no_meal doesn't have anything to pick up)
+    const pickupableOrders = activeOrders.filter(o => {
+      const form = o.selection && o.selection.meal_form;
+      return form !== 'no_meal';
+    });
+
+    // Filter tab button helper
+    const filterBtn = (key, emoji, label, n) => {
+      const active = actingFilter === key;
+      return `<button class="act-filter ${active ? 'active' : ''}" data-filter="${key}">
+        <span class="af-label">${emoji}${label}</span>
+        <span class="af-count">${n}</span>
+      </button>`;
+    };
 
     root.innerHTML = `
       ${renderBrand()}
@@ -1239,30 +1329,42 @@
       </div>
       ${renderDateChips(dates, [actingDate], withOrders)}
 
+      ${isBreakfast ? `
+        <div class="act-filter-row">
+          ${filterBtn('all', '', '전체', counts.all)}
+          ${filterBtn('snack_pick', '🥣', ' 스낵픽', counts.snack_pick)}
+          ${filterBtn('kimbap', '🍙', ' 김밥', counts.kimbap)}
+          ${filterBtn('no_meal', '🚫', ' 미수령', counts.no_meal)}
+        </div>
+      ` : ''}
+
       <div class="section-title">
-        <h2>대기 중 (${countOnDate}건)</h2>
+        <h2>${actingFilter === 'all' ? `대기 중 (${filtered.length}건)` : `${filtered.length}건`}</h2>
         <span class="hint">탭하면 바코드</span>
       </div>
-      ${breakdownHtml}
 
       <div class="order-list">
-        ${activeOrders.length === 0 ? `
+        ${filtered.length === 0 ? `
           <div class="empty">
             <span class="empty-emoji">🌙</span>
-            ${fmtDate(actingDate)} ${mealLabel(actingMealType)} 신청이 없어요
+            ${fmtDate(actingDate)} ${mealLabel(actingMealType)}
+            ${actingFilter === 'all' ? '신청이 없어요' : '에 해당하는 신청이 없어요'}
           </div>
-        ` : activeOrders.map(o => `
-          <button class="order-card" data-id="${o.id}">
-            <div class="meal-badge ${o.meal_type}">${mealEmoji(o.meal_type)}</div>
-            <div class="order-body">
-              <div class="order-name">
-                ${escape(o.name)}
-                <span class="order-eid">${escape(o.employee_id)}</span>
+        ` : groups.map(g => `
+          ${g.label ? `<div class="group-header">${g.label} <span class="group-count">${g.items.length}</span></div>` : ''}
+          ${g.items.map(o => `
+            <button class="order-card ${(o.selection && o.selection.meal_form === 'no_meal') ? 'no-meal' : ''}" data-id="${o.id}">
+              <div class="meal-badge ${o.meal_type}">${(o.selection && o.selection.meal_form === 'no_meal') ? '🚫' : mealEmoji(o.meal_type)}</div>
+              <div class="order-body">
+                <div class="order-name">
+                  ${escape(o.name)}
+                  <span class="order-eid">${escape(o.employee_id)}</span>
+                </div>
+                ${renderOrderDetailDark(o)}
               </div>
-              ${renderOrderDetailDark(o)}
-            </div>
-            <div class="order-chevron">›</div>
-          </button>
+              <div class="order-chevron">›</div>
+            </button>
+          `).join('')}
         `).join('')}
       </div>
     `;
@@ -1277,12 +1379,28 @@
         renderActing();
       }));
 
+    document.querySelectorAll('[data-filter]').forEach(b =>
+      b.addEventListener('click', () => {
+        actingFilter = b.dataset.filter;
+        renderActingList();
+      }));
+
     document.querySelectorAll('.order-card').forEach(c =>
       c.addEventListener('click', () => {
         const id = Number(c.dataset.id);
-        const startIdx = activeOrders.findIndex(o => o.id === id);
+        // Find the order
+        const order = activeOrders.find(o => o.id === id);
+        if (!order) return;
+        // no_meal orders open in a simpler info modal (no barcode pickup loop)
+        if (order.selection && order.selection.meal_form === 'no_meal') {
+          openNoMealInfo(order);
+          return;
+        }
+        // For pickup-able orders, open viewer with the pickupable list (skip no_meal so swipe stays useful)
+        const list = pickupableOrders;
+        const startIdx = list.findIndex(o => o.id === id);
         if (startIdx >= 0) {
-          openOrderViewer(activeOrders, startIdx, {
+          openOrderViewer(list, startIdx, {
             allowPickup: true,
             onDataChanged: async () => {
               await Promise.all([loadActiveOrders(), loadActiveSummary()]);
@@ -1291,6 +1409,53 @@
           });
         }
       }));
+  }
+
+  // Lightweight info card for no_meal orders (no barcode shown — nothing to scan)
+  function openNoMealInfo(order) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="viewer-content" style="padding:24px;">
+          <div class="modal-header">
+            <div class="modal-title">🚫 미수령 · ${fmtDate(order.service_date, { withMonth: true })}</div>
+            <button class="modal-close" data-close aria-label="닫기">✕</button>
+          </div>
+          <div class="id-name">${escape(order.name)}</div>
+          <div class="id-eid">사번 ${escape(order.employee_id)}</div>
+          <div class="no-meal-banner">
+            <div class="nm-emoji">🚫</div>
+            <div>
+              <div class="nm-title">식사 안 받음</div>
+              <div class="nm-sub">출근은 했지만 식사 수령은 안 한다고 신청했어요.</div>
+            </div>
+          </div>
+          ${order.selection && order.selection.note ? `
+            <div class="id-menu" style="margin-top:14px;">
+              <span class="label">메모</span>
+              ${escape(order.selection.note)}
+            </div>
+          ` : ''}
+          <div class="modal-actions" style="margin-top:16px;">
+            <button class="btn btn-ghost-light" data-close>닫기</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+    function close() {
+      overlay.remove();
+      document.body.style.overflow = '';
+    }
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+      if (e.target.closest && e.target.closest('[data-close]')) close();
+    });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
   }
 
   function renderActing() {
@@ -1334,26 +1499,28 @@
     const catEmoji = cc.category_emoji || '🍽️';
     const slots = cc.slots || [];
 
-    const choiceRows = slots.filter(s => !s.fixed).map(s => {
+    const rowsHtml = slots.map(s => {
+      if (s.fixed) {
+        return `<div class="vtier-row"><span class="vtier-rowname">${escape(s.slot_name)}</span><span class="vtier-rowval fixed">${escape(s.fixed)}</span></div>`;
+      }
       const pri = Array.isArray(s.priority) ? s.priority : [];
-      const priHtml = pri.map((v, i) => `<span class="det-pri"><span class="det-rank">${i+1}</span>${escape(v)}</span>`).join('');
-      const anyHtml = s.any ? `<span class="det-any">아무거나 OK</span>` : '';
-      return `<div class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val">${priHtml}${anyHtml || (pri.length === 0 ? '<span class="det-empty">—</span>' : '')}</span></div>`;
+      const chips = pri.map((v, i) =>
+        `<span class="vtier-chip"><span class="vtier-chip-rank">${i+1}</span>${escape(v)}</span>`
+      ).join('');
+      const anyHtml = s.any ? `<span class="vtier-chip any">아무거나 OK</span>` : '';
+      const valHtml = (pri.length === 0 && !s.any)
+        ? '<span class="vtier-empty">—</span>'
+        : `${chips}${anyHtml}`;
+      return `<div class="vtier-row"><span class="vtier-rowname">${escape(s.slot_name)}</span><span class="vtier-rowval">${valHtml}</span></div>`;
     }).join('');
 
-    const fixedSlots = slots.filter(s => s.fixed);
-    const fixedHtml = fixedSlots.length
-      ? `<div class="det-fixed-row">${fixedSlots.map(s => `<span class="det-fixed-chip">${escape(s.slot_name ? s.slot_name + ': ' : '')}${escape(s.fixed)}</span>`).join('')}</div>`
-      : '';
-
     return `
-      <div class="tier-card ${tierIdx === 0 ? 'tier-primary' : 'tier-secondary'}">
-        <div class="tier-head">
-          <span class="tier-badge">${tierIdx + 1}순위</span>
-          <span class="tier-cat">${catEmoji} ${escape(catName)}</span>
+      <div class="vtier-card ${tierIdx === 0 ? 'primary' : 'secondary'}">
+        <div class="vtier-head">
+          <span class="vtier-badge">${tierIdx + 1}순위</span>
+          <span class="vtier-cat">${catEmoji} ${escape(catName)}</span>
         </div>
-        ${choiceRows}
-        ${fixedHtml}
+        ${rowsHtml}
       </div>
     `;
   }
@@ -1362,13 +1529,27 @@
   function renderOrderDetailLight(order) {
     const sel = order.selection;
     if (order.meal_type === 'breakfast' && sel) {
+      if (sel.meal_form === 'no_meal') {
+        return `
+          <div class="no-meal-banner" style="margin-top:14px;">
+            <div class="nm-emoji">🚫</div>
+            <div>
+              <div class="nm-title">식사 안 받음</div>
+              <div class="nm-sub">출근은 했지만 식사는 받지 않아요.</div>
+            </div>
+          </div>
+          ${sel.note ? `<div class="id-menu" style="margin-top:10px;"><span class="label">메모</span>${escape(sel.note)}</div>` : ''}
+        `;
+      }
       if (sel.meal_form === 'kimbap') {
         return `
-          <div class="id-menu id-menu-struct">
-            <span class="label">🍙 김밥/주먹밥</span>
-            <div style="font-size:18px;font-weight:700;color:#111;margin-top:6px;">${escape(sel.kimbap_choice || '')}</div>
-            ${sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : ''}
+          <div class="vtier-card primary" style="margin-top:14px;">
+            <div class="vtier-head">
+              <span class="vtier-badge">🍙</span>
+              <span class="vtier-cat">${escape(sel.kimbap_choice || '')}</span>
+            </div>
           </div>
+          ${sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : ''}
         `;
       }
       if (sel.meal_form === 'snack_pick') {
@@ -1378,33 +1559,22 @@
           ? `<div class="fallback-note"><span class="fb-icon">🎲</span> 위 메뉴들이 모두 없으면 <strong>아무거나</strong> 받아가셔도 OK</div>`
           : '';
         return `
-          <div class="tier-scroll-wrap">
+          <div class="vtier-list">
             ${tiersHtml}
           </div>
           ${fallbackHtml}
           ${sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : ''}
         `;
       }
-      // Legacy schema (single category)
+      // Legacy schema
       if (Array.isArray(sel.slots)) {
         const catName = sel.category_name || '';
         const catEmoji = sel.category_emoji || '🍽️';
-        const choiceRows = sel.slots.filter(s => !s.fixed).map(s => {
-          const pri = Array.isArray(s.priority) ? s.priority : [];
-          const priHtml = pri.map((v, i) => `<span class="det-pri"><span class="det-rank">${i+1}</span>${escape(v)}</span>`).join('');
-          const anyHtml = s.any ? `<span class="det-any">아무거나 OK</span>` : '';
-          return `<li class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val">${priHtml}${anyHtml || (pri.length === 0 ? '<span class="det-empty">—</span>' : '')}</span></li>`;
-        }).join('');
-        const fixedSlots = sel.slots.filter(s => s.fixed);
-        const fixedHtml = fixedSlots.length ? `<div class="det-fixed-row">${fixedSlots.map(s => `<span class="det-fixed-chip">${escape(s.slot_name ? s.slot_name + ': ' : '')}${escape(s.fixed)}</span>`).join('')}</div>` : '';
-        return `
-          <div class="id-menu id-menu-struct">
-            <span class="label">${catEmoji} ${escape(catName)}</span>
-            ${choiceRows ? `<ul class="det-list">${choiceRows}</ul>` : ''}
-            ${fixedHtml}
-            ${sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : ''}
-          </div>
-        `;
+        return renderCategoryChoiceLight({
+          category_name: catName,
+          category_emoji: catEmoji,
+          slots: sel.slots,
+        }, 0) + (sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : '');
       }
     }
     return `
@@ -1513,8 +1683,8 @@
 
       try {
         JsBarcode(card.querySelector('.barcode-svg'), String(order.employee_id || user.employee_id), {
-          format: 'CODE128', displayValue: true, fontSize: 18,
-          height: 110, margin: 8, background: '#ffffff', lineColor: '#000000',
+          format: 'CODE128', displayValue: false,
+          height: 100, margin: 4, background: '#ffffff', lineColor: '#000000',
         });
       } catch (e) { console.error('barcode error', e); }
 

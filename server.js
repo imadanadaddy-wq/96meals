@@ -309,6 +309,11 @@ function summarizeCategoryChoice(cc) {
 
 function summarizeBreakfast(sel) {
   if (!sel) return '';
+  if (sel.meal_form === 'no_meal') {
+    let s = '[미수령] 식사 안 받음';
+    if (sel.note) s += ` — ${sel.note}`;
+    return s;
+  }
   if (sel.meal_form === 'kimbap') {
     let s = `[김밥/주먹밥] ${sel.kimbap_choice || ''}`;
     if (sel.note) s += ` — ${sel.note}`;
@@ -374,6 +379,13 @@ function validateCategoryChoice(catChoice) {
 function validateBreakfastSelection(input) {
   if (!input || typeof input !== 'object') return { error: '선택 정보가 올바르지 않습니다' };
   const form = input.meal_form;
+
+  if (form === 'no_meal') {
+    const note = typeof input.note === 'string' ? input.note.trim().slice(0, 200) : '';
+    const sel = { meal_form: 'no_meal' };
+    if (note) sel.note = note;
+    return { selection: sel, menu: summarizeBreakfast(sel) };
+  }
 
   if (form === 'kimbap') {
     const choice = String(input.kimbap_choice || '').trim();
@@ -1012,4 +1024,20 @@ app.get('/guide', (req, res) => {
 app.listen(PORT, () => {
   console.log(`KNUH Meal Dashboard listening on :${PORT}`);
   console.log(`DB: ${DB_PATH}`);
+
+  // Warn if DB is likely on ephemeral storage on Railway
+  const onRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
+  const isEphemeral = !DB_PATH.startsWith('/data') && !DB_PATH.startsWith('/mnt') && !DB_PATH.startsWith('/var/lib');
+  if (onRailway && isEphemeral) {
+    console.warn('');
+    console.warn('==================================================================');
+    console.warn('⚠️  WARNING: DB is on EPHEMERAL storage. Data will be LOST on every');
+    console.warn('   redeploy or container restart.');
+    console.warn('');
+    console.warn('   To fix: in Railway dashboard:');
+    console.warn('   1. Service → Settings → Volumes → New Volume, mount at /data');
+    console.warn('   2. Variables → add DATABASE_PATH = /data/knuh.db');
+    console.warn('==================================================================');
+    console.warn('');
+  }
 });
