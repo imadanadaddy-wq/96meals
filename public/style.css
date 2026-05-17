@@ -1315,3 +1315,70 @@ input, textarea { font-family: inherit; }
 .manual-form { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
 .manual-row { display: flex; gap: 8px; }
 .manual-row .input { flex: 1; min-width: 0; }
+
+/* Fixed slots inline chips */
+.det-fixed-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #e5e7eb;
+}
+.det-fixed-chip {
+  background: #f3f4f6;
+  color: #555;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  border: 1px solid #e5e7eb;
+}
+
+/* Acting list breakdown chips */
+.order-breakdown {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 4px 10px;
+}
+.breakdown-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.breakdown-chip strong { font-size: 15px; font-weight: 800; }
+.breakdown-chip.snack { background: var(--breakfast-soft, #fff8e6); color: #5b4500; border: 1px solid #ffe9a8; }
+.breakdown-chip.kimbap { background: #e6f4ea; color: #1a5c2a; border: 1px solid #a8ddb0; }
+.breakdown-chip.other { background: #f3f4f6; color: #555; border: 1px solid #e0e0e0; }
+
+/* Barcode-first modal: menu collapsible */
+.menu-details {
+  margin-top: 12px;
+}
+.menu-details-summary {
+  font-size: 12px;
+  color: #999;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+  list-style: none;
+}
+.menu-details-summary::-webkit-details-marker { display: none; }
+.menu-details[open] .menu-details-summary {
+  color: #666;
+  margin-bottom: 4px;
+}
+
+/* Skip meal button */
+.skip-meal-btn {
+  width: 100%;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  border: 1px dashed var(--border);
+  padding: 12px;
+}

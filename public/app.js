@@ -329,6 +329,9 @@
             <span class="count">밤 야식</span>
           </button>
         </div>
+        <button class="btn btn-ghost skip-meal-btn" id="skipMealBtn">
+          🙅 오늘은 패스할게요
+        </button>
       ` : `
         <div class="section-title" style="margin-top:14px;">
           <h2>내 신청 현황</h2>
@@ -364,6 +367,15 @@
     `;
 
     $('#switchRole').addEventListener('click', () => { saveRole(null); render(); });
+
+    const skipBtn = document.getElementById('skipMealBtn');
+    if (skipBtn) {
+      skipBtn.addEventListener('click', () => {
+        toast('오늘도 화이팅! 🙌');
+        saveRole(null);
+        render();
+      });
+    }
 
     document.querySelectorAll('[data-meal]').forEach(b =>
       b.addEventListener('click', () => {
@@ -1198,6 +1210,19 @@
     );
     const countOnDate = activeOrders.length;
 
+    // Breakfast breakdown: snack_pick vs kimbap
+    let breakdownHtml = '';
+    if (actingMealType === 'breakfast' && activeOrders.length > 0) {
+      const snackCount = activeOrders.filter(o => o.selection && o.selection.meal_form === 'snack_pick').length;
+      const kimbapCount = activeOrders.filter(o => o.selection && o.selection.meal_form === 'kimbap').length;
+      const otherCount = countOnDate - snackCount - kimbapCount;
+      const parts = [];
+      if (snackCount > 0) parts.push(`<span class="breakdown-chip snack">🥣 스낵픽 <strong>${snackCount}</strong></span>`);
+      if (kimbapCount > 0) parts.push(`<span class="breakdown-chip kimbap">🍙 밥 <strong>${kimbapCount}</strong></span>`);
+      if (otherCount > 0) parts.push(`<span class="breakdown-chip other">기타 <strong>${otherCount}</strong></span>`);
+      if (parts.length > 0) breakdownHtml = `<div class="order-breakdown">${parts.join('')}</div>`;
+    }
+
     root.innerHTML = `
       ${renderBrand()}
       <div class="topbar">
@@ -1218,6 +1243,7 @@
         <h2>대기 중 (${countOnDate}건)</h2>
         <span class="hint">탭하면 바코드</span>
       </div>
+      ${breakdownHtml}
 
       <div class="order-list">
         ${activeOrders.length === 0 ? `
@@ -1276,22 +1302,32 @@
   function renderCategoryChoiceLight(cc, tierIdx) {
     const catName = cc.category_name || '';
     const catEmoji = cc.category_emoji || '🍽️';
-    const rows = (cc.slots || []).map(s => {
-      if (s.fixed) {
-        return `<li class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val det-fixed">${escape(s.fixed)}</span></li>`;
-      }
+    const slots = cc.slots || [];
+
+    // Choice slots: each gets its own row
+    const choiceRows = slots.filter(s => !s.fixed).map(s => {
       const pri = Array.isArray(s.priority) ? s.priority : [];
       const priHtml = pri.map((v, i) => `<span class="det-pri"><span class="det-rank">${i+1}</span>${escape(v)}</span>`).join('');
       const anyHtml = s.any ? `<span class="det-any">아무거나 OK</span>` : '';
       return `<li class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val">${priHtml}${anyHtml || (pri.length === 0 ? '<span class="det-empty">—</span>' : '')}</span></li>`;
     }).join('');
+
+    // Fixed slots: all on one line as chips
+    const fixedSlots = slots.filter(s => s.fixed);
+    const fixedHtml = fixedSlots.length ? `
+      <div class="det-fixed-row">
+        ${fixedSlots.map(s => `<span class="det-fixed-chip">${escape(s.slot_name ? s.slot_name + ': ' : '')}${escape(s.fixed)}</span>`).join('')}
+      </div>
+    ` : '';
+
     return `
       <div class="tier-section ${tierIdx === 0 ? 'tier-primary' : 'tier-secondary'}">
         <div class="tier-head">
           <span class="tier-badge">${tierIdx + 1}순위</span>
           <span class="tier-cat">${catEmoji} ${escape(catName)}</span>
         </div>
-        <ul class="det-list">${rows}</ul>
+        ${choiceRows ? `<ul class="det-list">${choiceRows}</ul>` : ''}
+        ${fixedHtml}
       </div>
     `;
   }
@@ -1328,19 +1364,19 @@
       if (Array.isArray(sel.slots)) {
         const catName = sel.category_name || '';
         const catEmoji = sel.category_emoji || '🍽️';
-        const rows = sel.slots.map(s => {
-          if (s.fixed) {
-            return `<li class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val det-fixed">${escape(s.fixed)}</span></li>`;
-          }
+        const choiceRows = sel.slots.filter(s => !s.fixed).map(s => {
           const pri = Array.isArray(s.priority) ? s.priority : [];
           const priHtml = pri.map((v, i) => `<span class="det-pri"><span class="det-rank">${i+1}</span>${escape(v)}</span>`).join('');
           const anyHtml = s.any ? `<span class="det-any">아무거나 OK</span>` : '';
           return `<li class="det-row"><span class="det-name">${escape(s.slot_name)}</span><span class="det-val">${priHtml}${anyHtml || (pri.length === 0 ? '<span class="det-empty">—</span>' : '')}</span></li>`;
         }).join('');
+        const fixedSlots = sel.slots.filter(s => s.fixed);
+        const fixedHtml = fixedSlots.length ? `<div class="det-fixed-row">${fixedSlots.map(s => `<span class="det-fixed-chip">${escape(s.slot_name ? s.slot_name + ': ' : '')}${escape(s.fixed)}</span>`).join('')}</div>` : '';
         return `
           <div class="id-menu id-menu-struct">
             <span class="label">${catEmoji} ${escape(catName)}</span>
-            <ul class="det-list">${rows}</ul>
+            ${choiceRows ? `<ul class="det-list">${choiceRows}</ul>` : ''}
+            ${fixedHtml}
             ${sel.note ? `<div class="det-note">📝 ${escape(sel.note)}</div>` : ''}
           </div>
         `;
@@ -1437,10 +1473,13 @@
         </div>
         <div class="id-name">${escape(order.name || user.name)}</div>
         <div class="id-eid">사번 ${escape(order.employee_id || user.employee_id)}</div>
-        ${renderOrderDetailLight(order)}
         <div class="barcode-wrap">
           <svg class="barcode-svg"></svg>
         </div>
+        <details class="menu-details">
+          <summary class="menu-details-summary">메뉴 보기 ▾</summary>
+          ${renderOrderDetailLight(order)}
+        </details>
         <div class="modal-actions">
           <button class="btn btn-ghost-light" data-action="close">닫기</button>
           ${allowPickup ? `<button class="btn" data-action="pickup">수령 완료 · 다음</button>` : ''}
