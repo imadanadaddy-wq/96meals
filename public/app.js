@@ -647,7 +647,7 @@
   function renderBfNoMeal() {
     root.innerHTML = `
       ${renderBrand()}
-      ${applicantHeader('🚫 식사 안 받음', { onBack: true, step: 3, totalSteps: 3 })}
+      ${applicantHeader('🙅‍♀️ 식사 안 받음', { onBack: true, step: 3, totalSteps: 3 })}
 
       <div class="card step-card">
         <h2 class="step-h">출근은 하지만 식사는 안 받아요</h2>
@@ -1295,7 +1295,7 @@
       }
       if (byForm.snack_pick.length) groups.push({ key: 'snack_pick', label: '🥣 스낵픽', items: byForm.snack_pick });
       if (byForm.kimbap.length) groups.push({ key: 'kimbap', label: '🍙 김밥/주먹밥', items: byForm.kimbap });
-      if (byForm.no_meal.length) groups.push({ key: 'no_meal', label: '🚫 미수령 (식사 안 받음)', items: byForm.no_meal });
+      if (byForm.no_meal.length) groups.push({ key: 'no_meal', label: '🙅‍♀️ 미수령 (식사 안 받음)', items: byForm.no_meal });
       if (byForm.other.length) groups.push({ key: 'other', label: '기타', items: byForm.other });
     } else {
       // Single-group view (filter selected) or non-breakfast
@@ -1338,7 +1338,7 @@
           ${filterBtn('all', '', '전체', counts.all)}
           ${filterBtn('snack_pick', '🥣', ' 스낵픽', counts.snack_pick)}
           ${filterBtn('kimbap', '🍙', ' 김밥', counts.kimbap)}
-          ${filterBtn('no_meal', '🚫', ' 미수령', counts.no_meal)}
+          ${filterBtn('no_meal', '🙅‍♀️', ' 미수령', counts.no_meal)}
         </div>
       ` : ''}
 
@@ -1358,7 +1358,7 @@
           ${g.label ? `<div class="group-header">${g.label} <span class="group-count">${g.items.length}</span></div>` : ''}
           ${g.items.map(o => `
             <button class="order-card ${(o.selection && o.selection.meal_form === 'no_meal') ? 'no-meal' : ''}" data-id="${o.id}">
-              <div class="meal-badge ${o.meal_type}">${(o.selection && o.selection.meal_form === 'no_meal') ? '🚫' : mealEmoji(o.meal_type)}</div>
+              <div class="meal-badge ${o.meal_type}">${(o.selection && o.selection.meal_form === 'no_meal') ? '🙅‍♀️' : mealEmoji(o.meal_type)}</div>
               <div class="order-body">
                 <div class="order-name">
                   ${escape(o.name)}
@@ -1423,13 +1423,13 @@
       <div class="modal" role="dialog" aria-modal="true">
         <div class="viewer-content" style="padding:24px;">
           <div class="modal-header">
-            <div class="modal-title">🚫 미수령 · ${fmtDate(order.service_date, { withMonth: true })}</div>
+            <div class="modal-title">🙅‍♀️ 미수령 · ${fmtDate(order.service_date, { withMonth: true })}</div>
             <button class="modal-close" data-close aria-label="닫기">✕</button>
           </div>
           <div class="id-name">${escape(order.name)}</div>
           <div class="id-eid">사번 ${escape(order.employee_id)}</div>
           <div class="no-meal-banner">
-            <div class="nm-emoji">🚫</div>
+            <div class="nm-emoji">🙅‍♀️</div>
             <div>
               <div class="nm-title">식사 안 받음</div>
               <div class="nm-sub">출근은 했지만 식사 수령은 안 한다고 신청했어요.</div>
@@ -1543,7 +1543,7 @@
       if (sel.meal_form === 'no_meal') {
         return `
           <div class="no-meal-banner" style="margin-top:14px;">
-            <div class="nm-emoji">🚫</div>
+            <div class="nm-emoji">🙅‍♀️</div>
             <div>
               <div class="nm-title">식사 안 받음</div>
               <div class="nm-sub">출근은 했지만 식사는 받지 않아요.</div>
