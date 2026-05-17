@@ -1850,63 +1850,427 @@
 
     $('#switchRole').addEventListener('click', () => { saveRole(null); render(); });
     document.querySelectorAll('.tab').forEach(t =>
-      t.addEventListener('click', () => { adminMealTab = t.dataset.tab; renderAdmin(); }));
+      t.addEventListener('click', () => { if (t.dataset.tab !== 'manual') manualStep = 'info'; adminMealTab = t.dataset.tab; renderAdmin(); }));
 
     if (adminMealTab === 'breakfast') renderAdminBreakfast();
     else if (adminMealTab === 'manual') renderAdminManual();
     else renderAdminLateNight();
   }
 
+  // ===== Admin Manual Entry State =====
+  let manualStep = 'info';   // 'info' | 'menu'
+  let manualEmpId = '';
+  let manualName = '';
+  let manualDate = '';
+  let manualMealType = 'breakfast';
+  let manualLog = [];
+  // menu draft reuses draftMealType, draftMenuName, draftCustomText, bfStep, draftMealForm,
+  // draftPriorities, draftFallbackAny, draftKimbapChoice, draftNote
+
   function renderAdminManual() {
+    if (manualStep === 'menu') {
+      renderAdminManualMenu();
+    } else {
+      renderAdminManualInfo();
+    }
+  }
+
+  function renderAdminManualInfo() {
+    const todayInput = new Date().toISOString().slice(0, 10);
+    if (!manualDate) manualDate = todayInput;
+
     $('#adminBody').innerHTML = `
       <div class="section-title"><h2>수동 신청 입력</h2></div>
-      <p style="color:var(--muted);font-size:13px;margin:0 4px 12px;">사번·이름·날짜·메뉴를 직접 입력해서 신청을 생성합니다.</p>
+      <p style="color:var(--muted);font-size:13px;margin:0 4px 12px;">사번·이름을 입력한 뒤 기존 방식으로 메뉴를 선택합니다.</p>
       <div class="manual-form">
         <div class="manual-row">
-          <input class="input" id="mEmpId" maxlength="10" placeholder="사번 (예: 12345)" inputmode="numeric" />
-          <input class="input" id="mName" maxlength="20" placeholder="이름" />
+          <input class="input" id="mEmpId" maxlength="10" placeholder="사번 (예: 12345)" inputmode="numeric" value="${escape(manualEmpId)}" />
+          <input class="input" id="mName" maxlength="20" placeholder="이름" value="${escape(manualName)}" />
         </div>
         <div class="manual-row">
-          <input class="input" id="mDate" type="date" />
+          <input class="input" id="mDate" type="date" value="${manualDate}" />
           <select class="input" id="mMealType">
-            <option value="breakfast">🍳 조식</option>
-            <option value="late_night">🍜 야식</option>
+            <option value="breakfast" ${manualMealType==='breakfast'?'selected':''}>🍳 조식</option>
+            <option value="late_night" ${manualMealType==='late_night'?'selected':''}>🍜 야식</option>
           </select>
         </div>
-        <div class="manual-row">
-          <input class="input" id="mMenu" maxlength="200" placeholder="메뉴 (예: 선식·우유·계란2개 / 컵라면)" style="flex:1;" />
-        </div>
-        <button class="btn btn-primary" id="mAddBtn">등록</button>
+        <button class="btn btn-primary" id="mNextBtn" style="margin-top:6px;">메뉴 선택하기 →</button>
       </div>
-      <div id="manualLog" style="margin-top:12px;font-size:13px;"></div>
+      ${manualLog.length ? `<div id="manualLogBox" style="margin-top:14px;font-size:13px;">${manualLog.map(l=>l).join('')}</div>` : ''}
     `;
 
-    const todayInput = new Date().toISOString().slice(0, 10);
-    $('#mDate').value = todayInput;
-
-    $('#mAddBtn').addEventListener('click', async () => {
+    $('#mNextBtn').addEventListener('click', async () => {
       const employee_id = $('#mEmpId').value.trim();
       const name = $('#mName').value.trim();
       const service_date = $('#mDate').value.trim();
       const meal_type = $('#mMealType').value;
-      const menu = $('#mMenu').value.trim();
-      const log = $('#manualLog');
-      if (!employee_id || !name || !service_date || !menu) {
-        toast('모든 항목을 입력해주세요'); return;
+      if (!employee_id || !name || !service_date) {
+        toast('사번·이름·날짜를 모두 입력해주세요'); return;
       }
-      try {
-        const res = await api('/api/admin/orders/manual', {
-          method: 'POST',
-          body: JSON.stringify({ employee_id, name, meal_type, menu, service_date })
-        });
-        const msg = res.action === 'created' ? '✅ 등록됨' : '🔄 수정됨';
-        const mealBadge = meal_type === 'breakfast' ? '🍳 조식' : '🍜 야식';
-        log.innerHTML = `<div style="color:var(--accent);margin-bottom:6px;">${msg} — ${mealBadge} ${escape(name)}(${escape(employee_id)}) ${service_date} ${escape(menu)}</div>` + log.innerHTML;
-        $('#mEmpId').value = '';
-        $('#mName').value = '';
-        $('#mMenu').value = '';
-      } catch (e) { toast(e.message); }
+      manualEmpId = employee_id;
+      manualName = name;
+      manualDate = service_date;
+      manualMealType = meal_type;
+
+      // Reset menu draft state (same as applicant flow)
+      draftMealType = meal_type;
+      draftDates = [service_date];
+      draftMenuName = '';
+      draftCustomText = '';
+      resetBreakfastDraft();
+
+      // Ensure menu data is loaded
+      if ((menuItemsCache.late_night || []).length === 0) await loadMenuItems();
+      if (!breakfastStructure.length) await loadBreakfastStructure();
+
+      manualStep = 'menu';
+      renderAdminManual();
     });
+  }
+
+  function renderAdminManualMenu() {
+    const adminBody = $('#adminBody');
+
+    // Header with back button and person info
+    const infoBar = `
+      <div class="section-title" style="margin-bottom:8px;">
+        <h2>수동 신청 — 메뉴 선택</h2>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-ghost" id="mBackBtn" style="padding:6px 12px;font-size:13px;">← 뒤로</button>
+        <span style="font-size:13px;color:var(--muted);">
+          ${escape(manualName)} (${escape(manualEmpId)}) · ${manualDate} · ${manualMealType==='breakfast'?'🍳 조식':'🍜 야식'}
+        </span>
+      </div>
+    `;
+
+    adminBody.innerHTML = infoBar + `<div id="manualMenuArea"></div>`;
+
+    document.getElementById('mBackBtn').addEventListener('click', () => {
+      manualStep = 'info';
+      renderAdminManual();
+    });
+
+    // Render the appropriate menu picker into #manualMenuArea
+    if (manualMealType === 'late_night') {
+      renderAdminManualLateNight();
+    } else {
+      renderAdminManualBreakfast();
+    }
+  }
+
+  function renderAdminManualLateNight() {
+    const items = menuItemsCache.late_night || [];
+    const area = document.getElementById('manualMenuArea');
+    area.innerHTML = `
+      <div class="card step-card" style="margin:0;">
+        <h2 class="step-h">메뉴 선택</h2>
+        ${items.length === 0 ? `
+          <div class="empty" style="margin-top:8px;">
+            <span class="empty-emoji">📭</span>등록된 메뉴가 없습니다.
+          </div>
+        ` : `
+          <div class="menu-grid">
+            ${items.map(it => `
+              <button class="menu-chip ${draftMenuName===it.name?'selected':''}" data-menu="${escape(it.name)}">
+                ${escape(it.name)}
+              </button>
+            `).join('')}
+          </div>
+        `}
+        <div class="field" style="margin-top:14px;margin-bottom:0;">
+          <label for="mMenuInput">직접 입력 (선택)</label>
+          <textarea class="textarea" id="mMenuInput" maxlength="200"
+            placeholder="예: 컵라면, 안 매운걸로">${escape(draftCustomText)}</textarea>
+        </div>
+      </div>
+      <div class="step-action" style="padding:12px 0 0;">
+        <button class="btn btn-primary" id="mSubmitBtn">등록하기</button>
+      </div>
+    `;
+
+    area.querySelectorAll('[data-menu]').forEach(b =>
+      b.addEventListener('click', () => {
+        draftMenuName = b.dataset.menu;
+        draftCustomText = '';
+        renderAdminManualLateNight();
+      }));
+
+    const ta = document.getElementById('mMenuInput');
+    ta.addEventListener('input', () => {
+      draftCustomText = ta.value;
+      if (draftCustomText) draftMenuName = '';
+    });
+
+    document.getElementById('mSubmitBtn').addEventListener('click', async () => {
+      const menu = (draftCustomText || '').trim() || draftMenuName;
+      if (!menu) { toast('메뉴를 선택하거나 입력해주세요'); return; }
+      await submitAdminManual({ menu });
+    });
+  }
+
+  function renderAdminManualBreakfast() {
+    // Reuse the applicant breakfast flow but render into #manualMenuArea
+    // We temporarily swap root → manualMenuArea, then swap back after events are attached
+    const area = document.getElementById('manualMenuArea');
+    const origRoot = root;
+
+    // Proxy: point rendering to area
+    const fakeRoot = { innerHTML: '' };
+    Object.defineProperty(fakeRoot, 'innerHTML', {
+      set(v) { area.innerHTML = v; },
+      get() { return area.innerHTML; }
+    });
+
+    // Patch $ to search inside area for step actions
+    const origInner = root.innerHTML;
+
+    // Use the real applicant breakfast renders but intercept submitOrders
+    // We render directly using existing functions with root pointing to area
+    // Simplest approach: temporarily replace root innerHTML target
+
+    // Since root is a const pointing to #app, we can't replace it.
+    // Instead, we inline the breakfast menu into the area using renderBfForm logic,
+    // adapted to use #manualMenuArea as container.
+    renderAdminManualBfForm();
+  }
+
+  function renderAdminManualBfForm() {
+    if (!bfStep) bfStep = 'form';
+    const area = document.getElementById('manualMenuArea');
+    if (!area) return;
+
+    if (bfStep === 'form') _renderAdminBfFormPicker(area);
+    else if (bfStep === 'kimbap') _renderAdminBfKimbap(area);
+    else if (bfStep === 'tier') _renderAdminBfTier(area);
+    else if (bfStep === 'fallback') _renderAdminBfFallback(area);
+    else if (bfStep === 'note') _renderAdminBfNote(area);
+    else { bfStep = 'form'; _renderAdminBfFormPicker(area); }
+  }
+
+  function _areaRefreshBf() {
+    const area = document.getElementById('manualMenuArea');
+    if (area) renderAdminManualBfForm();
+  }
+
+  function _renderAdminBfFormPicker(area) {
+    area.innerHTML = `
+      <div class="card step-card" style="margin:0;">
+        <h2 class="step-h">식사 형태</h2>
+        <p class="step-desc">${manualDate} · 어떤 형태로 드실까요?</p>
+        <div class="choice-grid" style="margin-top:8px;">
+          <button class="choice-card breakfast" data-form="snack_pick">
+            <span class="emoji">🥣</span>
+            <span class="name">스낵픽</span>
+            <span class="count">선식·죽·빵·햄버거 등</span>
+          </button>
+          <button class="choice-card late_night" data-form="kimbap">
+            <span class="emoji">🍙</span>
+            <span class="name">김밥/주먹밥</span>
+            <span class="count">요일별 고정 메뉴</span>
+          </button>
+        </div>
+        <button class="btn btn-ghost" id="aNoMealBtn" style="margin-top:10px;">🙅 오늘은 안 받을게요</button>
+      </div>
+    `;
+    area.querySelectorAll('[data-form]').forEach(b =>
+      b.addEventListener('click', () => {
+        draftMealForm = b.dataset.form;
+        if (b.dataset.form === 'kimbap') {
+          bfStep = 'kimbap';
+        } else {
+          draftPriorities = [];
+          draftBuildingTier = 0;
+          bfStep = 'tier';
+          ensureTierDraft();
+        }
+        _areaRefreshBf();
+      }));
+    document.getElementById('aNoMealBtn').addEventListener('click', async () => {
+      draftMealForm = 'no_meal';
+      await submitAdminManual({ selection: { meal_form: 'no_meal' } });
+    });
+  }
+
+  function _renderAdminBfKimbap(area) {
+    const opts = kimbapOptions.filter(o => o.active);
+    area.innerHTML = `
+      <div class="card step-card" style="margin:0;">
+        <h2 class="step-h">김밥/주먹밥 선택</h2>
+        <div class="menu-grid" style="margin-top:10px;">
+          ${opts.map(o => `
+            <button class="menu-chip ${draftKimbapChoice===o.id?'selected':''}" data-kid="${o.id}" data-kname="${escape(o.name)}">
+              ${escape(o.name)}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      <div class="step-action" style="padding:12px 0 0;display:flex;gap:8px;">
+        <button class="btn btn-ghost" id="aBfBack">← 뒤로</button>
+        <button class="btn btn-primary" id="aBfKimbapNext">다음 →</button>
+      </div>
+    `;
+    area.querySelectorAll('[data-kid]').forEach(b =>
+      b.addEventListener('click', () => {
+        draftKimbapChoice = Number(b.dataset.kid);
+        draftMenuName = b.dataset.kname;
+        _renderAdminBfKimbap(area);
+      }));
+    document.getElementById('aBfBack').addEventListener('click', () => { bfStep = 'form'; _areaRefreshBf(); });
+    document.getElementById('aBfKimbapNext').addEventListener('click', async () => {
+      if (!draftKimbapChoice) { toast('메뉴를 선택해주세요'); return; }
+      bfStep = 'note';
+      _areaRefreshBf();
+    });
+  }
+
+  function _renderAdminBfTier(area) {
+    // Simplified: reuse existing renderBfTier logic inline but target area
+    // We call the real renderBfTier which uses root; instead we replicate key parts
+    const cats = breakfastStructure.filter(c => c.active !== false);
+    const curTier = draftPriorities[draftBuildingTier];
+    const remainingCats = breakfastStructure.filter(c =>
+      c.active !== false && !draftPriorities.slice(0, draftBuildingTier).some(p => p.category_id === c.id)
+    );
+
+    area.innerHTML = `
+      <div class="card step-card" style="margin:0;">
+        <h2 class="step-h">${draftBuildingTier === 0 ? '1순위 선택' : `${draftBuildingTier+1}순위 선택`}</h2>
+        <p class="step-desc">카테고리를 선택하세요</p>
+        <div class="choice-grid" style="margin-top:8px;">
+          ${remainingCats.map(c => `
+            <button class="choice-card breakfast ${curTier && curTier.category_id===c.id?'selected':''}" data-cat="${c.id}">
+              <span class="name">${escape(c.name)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      <div class="step-action" style="padding:12px 0 0;display:flex;gap:8px;">
+        <button class="btn btn-ghost" id="aBfTierBack">← 뒤로</button>
+        <button class="btn btn-primary" id="aBfTierNext">다음 →</button>
+      </div>
+    `;
+    area.querySelectorAll('[data-cat]').forEach(b =>
+      b.addEventListener('click', () => {
+        const catId = Number(b.dataset.cat);
+        if (!draftPriorities[draftBuildingTier]) draftPriorities[draftBuildingTier] = { category_id: catId, slots: {} };
+        else draftPriorities[draftBuildingTier].category_id = catId;
+        _renderAdminBfTier(area);
+      }));
+    document.getElementById('aBfTierBack').addEventListener('click', () => {
+      if (draftBuildingTier > 0) { draftBuildingTier--; } else { bfStep = 'form'; }
+      _areaRefreshBf();
+    });
+    document.getElementById('aBfTierNext').addEventListener('click', () => {
+      if (!curTier || !curTier.category_id) { toast('카테고리를 선택해주세요'); return; }
+      // Move to next tier or fallback
+      if (draftBuildingTier < cats.length - 1) {
+        draftBuildingTier++;
+        ensureTierDraft();
+        _areaRefreshBf();
+      } else {
+        bfStep = 'fallback';
+        _areaRefreshBf();
+      }
+    });
+  }
+
+  function _renderAdminBfFallback(area) {
+    area.innerHTML = `
+      <div class="card step-card" style="margin:0;">
+        <h2 class="step-h">모두 소진 시</h2>
+        <div class="choice-grid" style="margin-top:8px;">
+          <button class="choice-card breakfast ${!draftFallbackAny?'selected':''}" data-fb="0">
+            <span class="name">안 받음</span>
+            <span class="count">순위 메뉴 없으면 신청 안 받음</span>
+          </button>
+          <button class="choice-card late_night ${draftFallbackAny?'selected':''}" data-fb="1">
+            <span class="name">아무거나</span>
+            <span class="count">남은 거 아무거나 받음</span>
+          </button>
+        </div>
+      </div>
+      <div class="step-action" style="padding:12px 0 0;display:flex;gap:8px;">
+        <button class="btn btn-ghost" id="aBfFbBack">← 뒤로</button>
+        <button class="btn btn-primary" id="aBfFbNext">다음 →</button>
+      </div>
+    `;
+    area.querySelectorAll('[data-fb]').forEach(b =>
+      b.addEventListener('click', () => {
+        draftFallbackAny = b.dataset.fb === '1';
+        _renderAdminBfFallback(area);
+      }));
+    document.getElementById('aBfFbBack').addEventListener('click', () => {
+      bfStep = 'tier'; draftBuildingTier = draftPriorities.length - 1; _areaRefreshBf();
+    });
+    document.getElementById('aBfFbNext').addEventListener('click', () => {
+      bfStep = 'note'; _areaRefreshBf();
+    });
+  }
+
+  function _renderAdminBfNote(area) {
+    area.innerHTML = `
+      <div class="card step-card" style="margin:0;">
+        <h2 class="step-h">메모 (선택)</h2>
+        <div class="field" style="margin-top:8px;margin-bottom:0;">
+          <textarea class="textarea" id="aBfNoteInput" maxlength="200"
+            placeholder="예: 계란 알러지 / 두유 선호">${escape(draftNote)}</textarea>
+        </div>
+      </div>
+      <div class="step-action" style="padding:12px 0 0;display:flex;gap:8px;">
+        <button class="btn btn-ghost" id="aBfNoteBack">← 뒤로</button>
+        <button class="btn btn-primary" id="aBfNoteSubmit">등록하기</button>
+      </div>
+    `;
+    document.getElementById('aBfNoteInput').addEventListener('input', e => { draftNote = e.target.value; });
+    document.getElementById('aBfNoteBack').addEventListener('click', () => {
+      bfStep = draftMealForm === 'kimbap' ? 'kimbap' : 'fallback'; _areaRefreshBf();
+    });
+    document.getElementById('aBfNoteSubmit').addEventListener('click', async () => {
+      let selection;
+      if (draftMealForm === 'kimbap') {
+        selection = { meal_form: 'kimbap', kimbap_option_id: draftKimbapChoice, note: draftNote };
+      } else {
+        selection = {
+          meal_form: 'snack_pick',
+          category_priorities: draftPriorities.map(p => buildCategoryChoice(p)),
+          fallback_any: draftFallbackAny,
+          note: draftNote,
+        };
+      }
+      await submitAdminManual({ selection });
+    });
+  }
+
+  async function submitAdminManual(payload) {
+    const btn = document.getElementById('aBfNoteSubmit') || document.getElementById('mSubmitBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '등록 중...'; }
+    try {
+      let menu = payload.menu;
+      if (!menu && payload.selection) menu = summarizeSelection(payload.selection);
+      const res = await api('/api/admin/orders/manual', {
+        method: 'POST',
+        body: JSON.stringify({
+          employee_id: manualEmpId,
+          name: manualName,
+          meal_type: manualMealType,
+          service_date: manualDate,
+          menu,
+          selection: payload.selection || null,
+        })
+      });
+      const msg = res.action === 'created' ? '✅ 등록됨' : '🔄 수정됨';
+      const mealBadge = manualMealType === 'breakfast' ? '🍳 조식' : '🍜 야식';
+      manualLog.unshift(`<div style="color:var(--accent);margin-bottom:6px;">${msg} — ${mealBadge} ${escape(manualName)}(${escape(manualEmpId)}) ${manualDate} ${escape(menu || '')}</div>`);
+      toast(msg.replace(/[✅🔄] /, ''));
+      // Reset for next entry: keep emp/name, clear meal draft
+      draftMenuName = ''; draftCustomText = ''; resetBreakfastDraft();
+      manualStep = 'info';
+      renderAdminManual();
+    } catch (e) {
+      toast(e.message);
+      if (btn) { btn.disabled = false; btn.textContent = '등록하기'; }
+    }
   }
 
   function renderAdminLateNight() {
@@ -2261,10 +2625,9 @@
           await loadActiveSummary();
           if (actingStep === 'list') {
             await loadActiveOrders();
-            renderActing();
-          } else {
-            renderActing();
           }
+          // Always re-render acting (both choose and list) so counts stay fresh
+          renderActing();
         } else if (role === 'applicant') {
           // Only refresh home view automatically; in the middle of a step, don't disturb
           if (applicantStep === 'home') {
