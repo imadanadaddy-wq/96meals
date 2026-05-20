@@ -89,10 +89,43 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Late-night menu periods. Each period defines a date range + kind (weekday/holiday).
+  -- A given calendar day picks the period where date is within [start_date, end_date]
+  -- AND kind matches whether that day is a 매장 휴무일 or not.
+  CREATE TABLE IF NOT EXISTS menu_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meal_type TEXT NOT NULL DEFAULT 'late_night',
+    label TEXT NOT NULL,                              -- e.g. '5월 후반', '월말'
+    kind TEXT NOT NULL,                               -- 'weekday' (상시) | 'holiday' (휴무일)
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- 매장 휴무일 (store closure days). Admin sets these explicitly.
+  CREATE TABLE IF NOT EXISTS holidays (
+    date TEXT PRIMARY KEY,                            -- YYYY-MM-DD
+    label TEXT DEFAULT '',                            -- '주말', '공휴일', '어린이날' 등
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE INDEX IF NOT EXISTS idx_orders_status ON meal_orders(status);
   CREATE INDEX IF NOT EXISTS idx_orders_date ON meal_orders(service_date, meal_type, status);
   CREATE INDEX IF NOT EXISTS idx_menu_items_meal ON menu_items(meal_type, active, sort_order);
   CREATE INDEX IF NOT EXISTS idx_categories_meal ON meal_categories(meal_type, active, sort_order);
+  CREATE INDEX IF NOT EXISTS idx_menu_periods_lookup ON menu_periods(meal_type, kind, start_date, end_date, active);
+
+  -- Admin notices: shown to users as a one-time popup on first visit
+  CREATE TABLE IF NOT EXISTS notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,       -- 0 = hidden, 1 = active
+    expire_at DATETIME,                       -- NULL = never expires
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE INDEX IF NOT EXISTS idx_slots_category ON meal_slots(category_id, sort_order);
 `);
 
@@ -108,6 +141,11 @@ db.exec(`
     console.log('[migration] adding selection column');
     db.exec("ALTER TABLE meal_orders ADD COLUMN selection TEXT");
   }
+  const itemCols = db.prepare("PRAGMA table_info(menu_items)").all();
+  if (!itemCols.some(c => c.name === 'period_id')) {
+    console.log('[migration] adding period_id column to menu_items');
+    db.exec("ALTER TABLE menu_items ADD COLUMN period_id INTEGER REFERENCES menu_periods(id) ON DELETE CASCADE");
+  }
 })();
 
 // Partial unique index: one pending order per (user, date, meal_type)
@@ -117,14 +155,65 @@ db.exec(`
     WHERE status = 'pending';
 `);
 
-// Seed late_night menu items (legacy table) if empty
-(function seedLateNightMenu() {
-  const count = db.prepare(`SELECT COUNT(*) AS n FROM menu_items WHERE meal_type = 'late_night'`).get().n;
+// Seed late_night menu periods + items if menu_periods is empty
+// This installs the 5/18~5/31 menu set per the user's screenshots.
+(function seedLateNightPeriods() {
+  const periodCount = db.prepare(`SELECT COUNT(*) AS n FROM menu_periods WHERE meal_type = 'late_night'`).get().n;
+  if (periodCount > 0) return;
+  console.log('[seed] populating default late_night menu periods & items (5/18~5/31)');
+
+  const insP = db.prepare(`
+    INSERT INTO menu_periods (meal_type, label, kind, start_date, end_date, sort_order)
+    VALUES ('late_night', ?, ?, ?, ?, ?)
+  `);
+  const insM = db.prepare(`
+    INSERT INTO menu_items (meal_type, name, period_id, sort_order)
+    VALUES ('late_night', ?, ?, ?)
+  `);
+
+  // 상시 (weekday) — 5/18~5/31
+  const r1 = insP.run('5월 후반 상시', 'weekday', '2026-05-18', '2026-05-31', 0);
+  const weekdayId = Number(r1.lastInsertRowid);
+  const weekdayMenu = [
+    '돼지국밥',
+    '훈제오리샐러드',
+    '소보루덮밥',
+    '즉석라면+삶은계란+공기밥',
+    '떠먹는요거트+구운란+사과주스',
+  ];
+  weekdayMenu.forEach((n, i) => insM.run(n, weekdayId, i));
+
+  // 매장 휴무일 — 5/18~5/31
+  const r2 = insP.run('5월 후반 휴무일', 'holiday', '2026-05-18', '2026-05-31', 1);
+  const holidayId = Number(r2.lastInsertRowid);
+  const holidayMenu = [
+    '돼지국밥',
+    '훈제오리샐러드',
+    '빵+멸균우유+핫바',
+    '떠먹는요거트+구운란+사과주스',
+  ];
+  holidayMenu.forEach((n, i) => insM.run(n, holidayId, i));
+
+  // Clean up any orphan menu_items (legacy ones with no period_id) - leave them as-is for safety
+  // They won't be served because the API requires a matching period_id.
+})();
+
+// Seed default 매장 휴무일 if empty (this month's known closures)
+(function seedHolidays() {
+  const count = db.prepare(`SELECT COUNT(*) AS n FROM holidays`).get().n;
   if (count > 0) return;
-  console.log('[seed] populating default late_night menu items');
-  const items = ['컵라면', '김밥', '햄버거', '죽', '샌드위치', '라면'];
-  const ins = db.prepare('INSERT INTO menu_items (meal_type, name, sort_order) VALUES (?, ?, ?)');
-  items.forEach((name, i) => ins.run('late_night', name, i));
+  console.log('[seed] populating default holidays (May 2026)');
+  const defaults = [
+    { date: '2026-05-03', label: '주말 (일)' },
+    { date: '2026-05-05', label: '어린이날' },
+    { date: '2026-05-10', label: '주말 (일)' },
+    { date: '2026-05-17', label: '주말 (일)' },
+    { date: '2026-05-24', label: '주말 (일)' },
+    { date: '2026-05-25', label: '공휴일' },
+    { date: '2026-05-31', label: '주말 (일)' },
+  ];
+  const ins = db.prepare('INSERT OR IGNORE INTO holidays (date, label) VALUES (?, ?)');
+  defaults.forEach(h => ins.run(h.date, h.label));
 })();
 
 // Seed kimbap options if empty
@@ -469,10 +558,62 @@ app.get('/api/me', (req, res) => {
 
 // --- Late-night menu items (legacy / current usage) ---
 
+// Determines if a given date string is a 매장 휴무일
+function isHoliday(dateStr) {
+  if (!validDate(dateStr)) return false;
+  const row = db.prepare('SELECT date FROM holidays WHERE date = ?').get(dateStr);
+  return !!row;
+}
+
+// For a given date + meal_type, find the matching active period.
+// Returns the period row, or null if none matches.
+function findPeriodForDate(meal_type, dateStr) {
+  const kind = isHoliday(dateStr) ? 'holiday' : 'weekday';
+  return db.prepare(`
+    SELECT * FROM menu_periods
+    WHERE meal_type = ?
+      AND kind = ?
+      AND active = 1
+      AND start_date <= ?
+      AND end_date >= ?
+    ORDER BY start_date DESC, id DESC
+    LIMIT 1
+  `).get(meal_type, kind, dateStr, dateStr);
+}
+
 app.get('/api/menu-items', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
-  const { meal_type, include_inactive } = req.query;
+  const { meal_type, include_inactive, date, period_id } = req.query;
+
+  // Date-based query: applicant flow uses this to get the right menu for the day they're ordering for.
+  // Returns: { period: {...}|null, kind: 'weekday'|'holiday', is_holiday: bool, items: [...] }
+  if (date) {
+    if (!validDate(date)) return res.status(400).json({ error: '잘못된 날짜 형식입니다' });
+    if (!meal_type) return res.status(400).json({ error: 'meal_type이 필요합니다' });
+    const holiday = isHoliday(date);
+    const kind = holiday ? 'holiday' : 'weekday';
+    const period = findPeriodForDate(meal_type, date);
+    let items = [];
+    if (period) {
+      items = db.prepare(`
+        SELECT * FROM menu_items
+        WHERE meal_type = ? AND active = 1 AND period_id = ?
+        ORDER BY sort_order, id
+      `).all(meal_type, period.id);
+    }
+    return res.json({ period, kind, is_holiday: holiday, items });
+  }
+
+  // Period-based query (admin views)
+  if (period_id) {
+    const sql = include_inactive
+      ? 'SELECT * FROM menu_items WHERE period_id = ? ORDER BY sort_order, id'
+      : 'SELECT * FROM menu_items WHERE period_id = ? AND active = 1 ORDER BY sort_order, id';
+    return res.json(db.prepare(sql).all(Number(period_id)));
+  }
+
+  // Legacy: plain meal_type query (returns all items including orphans without period)
   let sql = 'SELECT * FROM menu_items';
   const params = [];
   const conds = [];
@@ -487,8 +628,9 @@ app.post('/api/menu-items', (req, res) => {
   const user = requireAdmin(req, res);
   if (!user) return;
 
-  let { meal_type, name } = req.body || {};
+  let { meal_type, name, period_id } = req.body || {};
   name = String(name || '').trim();
+  period_id = period_id ? Number(period_id) : null;
 
   if (!['breakfast', 'late_night'].includes(meal_type)) {
     return res.status(400).json({ error: '잘못된 식사 유형입니다' });
@@ -496,15 +638,27 @@ app.post('/api/menu-items', (req, res) => {
   if (!name) return res.status(400).json({ error: '메뉴 이름을 입력해주세요' });
   if (name.length > 50) return res.status(400).json({ error: '메뉴 이름이 너무 깁니다 (50자 이하)' });
 
+  if (meal_type === 'late_night') {
+    if (!period_id) return res.status(400).json({ error: '메뉴 기간(period_id)을 지정해주세요' });
+    const period = db.prepare('SELECT * FROM menu_periods WHERE id = ? AND meal_type = ?').get(period_id, meal_type);
+    if (!period) return res.status(404).json({ error: '존재하지 않는 기간입니다' });
+  }
+
+  // Duplicate check scoped to (meal_type, period_id)
   const dup = db.prepare(`
-    SELECT * FROM menu_items WHERE meal_type = ? AND name = ? AND active = 1
-  `).get(meal_type, name);
+    SELECT * FROM menu_items
+    WHERE meal_type = ? AND name = ? AND active = 1
+      AND ((? IS NULL AND period_id IS NULL) OR period_id = ?)
+  `).get(meal_type, name, period_id, period_id);
   if (dup) return res.status(409).json({ error: '이미 같은 이름의 메뉴가 있습니다' });
 
-  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM menu_items WHERE meal_type = ?').get(meal_type).m;
+  const maxOrder = db.prepare(`
+    SELECT COALESCE(MAX(sort_order), -1) AS m FROM menu_items
+    WHERE meal_type = ? AND ((? IS NULL AND period_id IS NULL) OR period_id = ?)
+  `).get(meal_type, period_id, period_id).m;
   const result = db.prepare(`
-    INSERT INTO menu_items (meal_type, name, sort_order) VALUES (?, ?, ?)
-  `).run(meal_type, name, maxOrder + 1);
+    INSERT INTO menu_items (meal_type, name, period_id, sort_order) VALUES (?, ?, ?, ?)
+  `).run(meal_type, name, period_id, maxOrder + 1);
 
   res.json(db.prepare('SELECT * FROM menu_items WHERE id = ?').get(Number(result.lastInsertRowid)));
 });
@@ -547,6 +701,214 @@ app.delete('/api/menu-items/:id', (req, res) => {
 });
 
 // --- Breakfast structure: categories + slots ---
+
+// --- Late-night menu periods (CRUD) ---
+
+app.get('/api/menu-periods', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const include_inactive = !!req.query.include_inactive;
+  const meal_type = req.query.meal_type || 'late_night';
+  const sql = include_inactive
+    ? `SELECT * FROM menu_periods WHERE meal_type = ? ORDER BY sort_order, start_date, id`
+    : `SELECT * FROM menu_periods WHERE meal_type = ? AND active = 1 ORDER BY sort_order, start_date, id`;
+  res.json(db.prepare(sql).all(meal_type));
+});
+
+app.post('/api/menu-periods', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  let { meal_type, label, kind, start_date, end_date } = req.body || {};
+  meal_type = meal_type || 'late_night';
+  label = String(label || '').trim();
+  kind = String(kind || '').trim();
+
+  if (meal_type !== 'late_night') return res.status(400).json({ error: 'meal_type은 현재 late_night만 지원합니다' });
+  if (!label) return res.status(400).json({ error: '기간 이름을 입력해주세요' });
+  if (label.length > 50) return res.status(400).json({ error: '이름이 너무 깁니다' });
+  if (!['weekday', 'holiday'].includes(kind)) return res.status(400).json({ error: 'kind는 weekday 또는 holiday여야 합니다' });
+  if (!validDate(start_date) || !validDate(end_date)) return res.status(400).json({ error: '시작/종료 날짜가 올바르지 않습니다' });
+  if (start_date > end_date) return res.status(400).json({ error: '시작 날짜가 종료 날짜보다 늦습니다' });
+
+  const maxOrder = db.prepare(`SELECT COALESCE(MAX(sort_order), -1) AS m FROM menu_periods WHERE meal_type = ?`).get(meal_type).m;
+  const r = db.prepare(`
+    INSERT INTO menu_periods (meal_type, label, kind, start_date, end_date, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(meal_type, label, kind, start_date, end_date, maxOrder + 1);
+  res.json(db.prepare('SELECT * FROM menu_periods WHERE id = ?').get(Number(r.lastInsertRowid)));
+});
+
+app.patch('/api/menu-periods/:id', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  const id = Number(req.params.id);
+  const p = db.prepare('SELECT * FROM menu_periods WHERE id = ?').get(id);
+  if (!p) return res.status(404).json({ error: '기간을 찾을 수 없습니다' });
+
+  const updates = [];
+  const params = [];
+  if (typeof req.body?.label === 'string') {
+    const v = req.body.label.trim();
+    if (!v || v.length > 50) return res.status(400).json({ error: '이름이 올바르지 않습니다' });
+    updates.push('label = ?'); params.push(v);
+  }
+  if (typeof req.body?.kind === 'string') {
+    if (!['weekday', 'holiday'].includes(req.body.kind)) return res.status(400).json({ error: 'kind는 weekday 또는 holiday여야 합니다' });
+    updates.push('kind = ?'); params.push(req.body.kind);
+  }
+  if (typeof req.body?.start_date === 'string') {
+    if (!validDate(req.body.start_date)) return res.status(400).json({ error: '시작 날짜가 올바르지 않습니다' });
+    updates.push('start_date = ?'); params.push(req.body.start_date);
+  }
+  if (typeof req.body?.end_date === 'string') {
+    if (!validDate(req.body.end_date)) return res.status(400).json({ error: '종료 날짜가 올바르지 않습니다' });
+    updates.push('end_date = ?'); params.push(req.body.end_date);
+  }
+  if (typeof req.body?.active === 'boolean') {
+    updates.push('active = ?'); params.push(req.body.active ? 1 : 0);
+  }
+  if (typeof req.body?.sort_order === 'number') {
+    updates.push('sort_order = ?'); params.push(req.body.sort_order);
+  }
+  if (!updates.length) return res.status(400).json({ error: '변경할 내용이 없습니다' });
+  params.push(id);
+  db.prepare(`UPDATE menu_periods SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  res.json(db.prepare('SELECT * FROM menu_periods WHERE id = ?').get(id));
+});
+
+app.delete('/api/menu-periods/:id', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  const id = Number(req.params.id);
+  // Manually delete menu_items in this period first (FK CASCADE configured but ON DELETE may not fire with ALTER TABLE-added FK in SQLite)
+  db.prepare('DELETE FROM menu_items WHERE period_id = ?').run(id);
+  const r = db.prepare('DELETE FROM menu_periods WHERE id = ?').run(id);
+  if (r.changes === 0) return res.status(404).json({ error: '기간을 찾을 수 없습니다' });
+  res.json({ ok: true });
+});
+
+// --- Holidays (CRUD) ---
+
+app.get('/api/holidays', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const { from, to } = req.query;
+  let sql = 'SELECT date, label FROM holidays';
+  const params = [];
+  const conds = [];
+  if (from && validDate(from)) { conds.push('date >= ?'); params.push(from); }
+  if (to && validDate(to)) { conds.push('date <= ?'); params.push(to); }
+  if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
+  sql += ' ORDER BY date';
+  res.json(db.prepare(sql).all(...params));
+});
+
+app.post('/api/holidays', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  let { date, label } = req.body || {};
+  date = String(date || '').trim();
+  label = String(label || '').trim().slice(0, 50);
+  if (!validDate(date)) return res.status(400).json({ error: '날짜를 YYYY-MM-DD 형식으로 입력해주세요' });
+  const dup = db.prepare('SELECT date FROM holidays WHERE date = ?').get(date);
+  if (dup) return res.status(409).json({ error: '이미 등록된 휴무일입니다' });
+  db.prepare('INSERT INTO holidays (date, label) VALUES (?, ?)').run(date, label);
+  res.json({ date, label });
+});
+
+app.delete('/api/holidays/:date', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  const date = String(req.params.date || '').trim();
+  if (!validDate(date)) return res.status(400).json({ error: '날짜 형식이 올바르지 않습니다' });
+  const r = db.prepare('DELETE FROM holidays WHERE date = ?').run(date);
+  if (r.changes === 0) return res.status(404).json({ error: '해당 휴무일을 찾을 수 없습니다' });
+  res.json({ ok: true });
+});
+
+// --- Notices ---
+
+// Public: return the single currently-active, non-expired notice (for popup)
+app.get('/api/notices/active', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const now = new Date().toISOString();
+  const notice = db.prepare(`
+    SELECT id, title, body, expire_at, created_at
+    FROM notices
+    WHERE active = 1
+      AND (expire_at IS NULL OR expire_at > ?)
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(now);
+  res.json(notice || null);
+});
+
+// Admin: list all notices
+app.get('/api/admin/notices', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  res.json(db.prepare('SELECT * FROM notices ORDER BY created_at DESC').all());
+});
+
+// Admin: create notice
+app.post('/api/admin/notices', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  let { title, body, expire_at } = req.body || {};
+  title = String(title || '').trim();
+  body  = String(body  || '').trim();
+  if (!title) return res.status(400).json({ error: '제목을 입력해주세요' });
+  if (!body)  return res.status(400).json({ error: '내용을 입력해주세요' });
+  if (title.length > 100) return res.status(400).json({ error: '제목이 너무 깁니다' });
+  if (body.length  > 1000) return res.status(400).json({ error: '내용이 너무 깁니다' });
+  // expire_at: accept ISO string or null/empty → null
+  const expireVal = expire_at && String(expire_at).trim() ? String(expire_at).trim() : null;
+  const r = db.prepare('INSERT INTO notices (title, body, expire_at) VALUES (?, ?, ?)').run(title, body, expireVal);
+  res.json(db.prepare('SELECT * FROM notices WHERE id = ?').get(Number(r.lastInsertRowid)));
+});
+
+// Admin: update (title/body/active/expire_at)
+app.patch('/api/admin/notices/:id', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  const id = Number(req.params.id);
+  const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(id);
+  if (!notice) return res.status(404).json({ error: '공지를 찾을 수 없습니다' });
+  const updates = []; const params = [];
+  if (typeof req.body?.title === 'string') {
+    const v = req.body.title.trim();
+    if (!v || v.length > 100) return res.status(400).json({ error: '제목이 올바르지 않습니다' });
+    updates.push('title = ?'); params.push(v);
+  }
+  if (typeof req.body?.body === 'string') {
+    const v = req.body.body.trim();
+    if (!v || v.length > 1000) return res.status(400).json({ error: '내용이 올바르지 않습니다' });
+    updates.push('body = ?'); params.push(v);
+  }
+  if (typeof req.body?.active === 'boolean') {
+    updates.push('active = ?'); params.push(req.body.active ? 1 : 0);
+  }
+  if ('expire_at' in (req.body || {})) {
+    const v = req.body.expire_at && String(req.body.expire_at).trim() ? String(req.body.expire_at).trim() : null;
+    updates.push('expire_at = ?'); params.push(v);
+  }
+  if (!updates.length) return res.status(400).json({ error: '변경할 내용이 없습니다' });
+  params.push(id);
+  db.prepare(`UPDATE notices SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  res.json(db.prepare('SELECT * FROM notices WHERE id = ?').get(id));
+});
+
+// Admin: delete notice
+app.delete('/api/admin/notices/:id', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+  const r = db.prepare('DELETE FROM notices WHERE id = ?').run(Number(req.params.id));
+  if (r.changes === 0) return res.status(404).json({ error: '공지를 찾을 수 없습니다' });
+  res.json({ ok: true });
+});
+
+// --- Breakfast structure ---
 
 app.get('/api/breakfast-structure', (req, res) => {
   const user = requireUser(req, res);
@@ -754,6 +1116,48 @@ app.delete('/api/kimbap-options/:id', (req, res) => {
 // Single-date create or update.
 // For breakfast: requires { selection: {...} }. menu is derived.
 // For late_night: requires { menu: "..." }.
+// Validate & normalize a late-night selection.
+// schema: { priority: ['메뉴1','메뉴2','메뉴3'], custom: '...' } — both fields optional, but at least one must be non-empty
+function validateLateNightSelection(input, fallbackMenu) {
+  // Legacy: if no selection provided but menu given, fall back to simple menu-only
+  if (!input || typeof input !== 'object') {
+    const m = String(fallbackMenu || '').trim();
+    if (!m) return { error: '메뉴를 입력해주세요' };
+    if (m.length > 200) return { error: '메뉴가 너무 깁니다 (200자 이하)' };
+    return { selection: null, menu: m };
+  }
+
+  let priority = Array.isArray(input.priority) ? input.priority.map(s => String(s || '').trim()).filter(Boolean) : [];
+  // Dedup preserving order
+  priority = [...new Set(priority)];
+  if (priority.length > 3) return { error: '순위는 최대 3개까지 가능합니다' };
+  for (const p of priority) {
+    if (p.length > 100) return { error: '메뉴 이름이 너무 깁니다' };
+  }
+  const custom = typeof input.custom === 'string' ? input.custom.trim().slice(0, 200) : '';
+
+  if (priority.length === 0 && !custom) {
+    return { error: '메뉴를 한 개 이상 선택하거나 직접 입력해주세요' };
+  }
+
+  // Build human-readable menu string
+  let menu = '';
+  if (priority.length === 1) {
+    menu = priority[0];
+  } else if (priority.length > 1) {
+    menu = priority.map((v, i) => `${i+1}순위 ${v}`).join(' → ');
+  }
+  if (custom) {
+    menu = menu ? `${menu} · ${custom}` : custom;
+  }
+  if (menu.length > 200) menu = menu.slice(0, 197) + '...';
+
+  return {
+    selection: { priority, custom },
+    menu,
+  };
+}
+
 app.post('/api/orders', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
@@ -777,9 +1181,10 @@ app.post('/api/orders', (req, res) => {
     selectionJSON = JSON.stringify(v.selection);
     menu = v.menu;
   } else {
-    menu = String(menu || '').trim();
-    if (!menu) return res.status(400).json({ error: '메뉴를 입력해주세요' });
-    if (menu.length > 200) return res.status(400).json({ error: '메뉴가 너무 깁니다 (200자 이하)' });
+    const v = validateLateNightSelection(selection, menu);
+    if (v.error) return res.status(400).json({ error: v.error });
+    if (v.selection) selectionJSON = JSON.stringify(v.selection);
+    menu = v.menu;
   }
 
   const existing = db.prepare(`
@@ -828,9 +1233,10 @@ app.post('/api/orders/batch', (req, res) => {
     selectionJSON = JSON.stringify(v.selection);
     menu = v.menu;
   } else {
-    menu = String(menu || '').trim();
-    if (!menu) return res.status(400).json({ error: '메뉴를 입력해주세요' });
-    if (menu.length > 200) return res.status(400).json({ error: '메뉴가 너무 깁니다 (200자 이하)' });
+    const v = validateLateNightSelection(selection, menu);
+    if (v.error) return res.status(400).json({ error: v.error });
+    if (v.selection) selectionJSON = JSON.stringify(v.selection);
+    menu = v.menu;
   }
 
   const findStmt = db.prepare(`
@@ -1029,7 +1435,76 @@ app.post('/api/admin/cleanup', (req, res) => {
   res.json({ deleted: result.changes });
 });
 
+// Admin: pickup log for a given date (all statuses, all meal_types)
+// Returns: orders with status (pending/picked_up), meal_form for breakfast, picked_up_at timestamp
+app.get('/api/admin/pickup-log', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+
+  const { date } = req.query;
+  if (!date || !validDate(date)) {
+    return res.status(400).json({ error: '날짜를 지정해주세요 (YYYY-MM-DD)' });
+  }
+
+  const orders = db.prepare(`
+    SELECT mo.id, mo.meal_type, mo.menu, mo.selection, mo.service_date,
+           mo.status, mo.created_at, mo.picked_up_at,
+           u.employee_id, u.name
+    FROM meal_orders mo
+    JOIN users u ON mo.user_id = u.id
+    WHERE mo.service_date = ?
+    ORDER BY mo.meal_type, COALESCE(mo.picked_up_at, mo.created_at), u.name
+  `).all(date);
+
+  res.json(orders.map(decorateOrder));
+});
+
+// Admin: which dates in the retention window have any orders (for calendar UI)
+app.get('/api/admin/pickup-log/dates', (req, res) => {
+  const user = requireAdmin(req, res);
+  if (!user) return;
+
+  const rows = db.prepare(`
+    SELECT service_date,
+           SUM(CASE WHEN status = 'picked_up' THEN 1 ELSE 0 END) AS picked,
+           SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+           COUNT(*) AS total
+    FROM meal_orders
+    GROUP BY service_date
+    ORDER BY service_date DESC
+  `).all();
+
+  res.json(rows);
+});
+
 app.get('/health', (req, res) => res.json({ ok: true }));
+
+// 진단용: 현재 DB가 어디 저장되고 있는지, 오래된 데이터가 있는지 확인
+app.get('/db-status', (req, res) => {
+  try {
+    const stats = fs.statSync(DB_PATH);
+    const orderCount = db.prepare('SELECT COUNT(*) AS n FROM meal_orders').get().n;
+    const oldestOrder = db.prepare(`
+      SELECT service_date, COUNT(*) AS n FROM meal_orders
+      GROUP BY service_date ORDER BY service_date LIMIT 5
+    `).all();
+    const onRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
+    const isPersistent = DB_PATH.startsWith('/data') || DB_PATH.startsWith('/mnt') || DB_PATH.startsWith('/var/lib');
+    res.json({
+      db_path: DB_PATH,
+      db_size_bytes: stats.size,
+      db_modified: stats.mtime.toISOString(),
+      on_railway: onRailway,
+      is_persistent_path: isPersistent,
+      database_path_env: process.env.DATABASE_PATH || null,
+      total_orders: orderCount,
+      orders_by_date: oldestOrder,
+      warning: (onRailway && !isPersistent) ? '⚠️ DB가 임시 저장소에 있음. Railway Volume 설정 필요' : null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Pretty URL for the user guide
 app.get('/guide', (req, res) => {
@@ -1040,27 +1515,42 @@ app.listen(PORT, () => {
   console.log(`KNUH Meal Dashboard listening on :${PORT}`);
   console.log(`DB: ${DB_PATH}`);
 
-  // ── 자정 자동 삭제: 전날(service_date < 오늘) 주문 전량 삭제 ──────────────
+  // ── 자정 자동 정리: 3일 이전(service_date < 오늘-2일) 주문 삭제 ─────────
+  // 오늘 + 어제 + 그저께(3일치)는 보존 → 관리자 수령 로그 확인용
+  // 추가 안전망: 서버 시작 시에도 한 번 청소 (자정에 서버가 꺼져 있었을 경우 대비)
+  function cleanupPastOrders(label) {
+    try {
+      // Retention cutoff = today - 2 days (inclusive). Anything earlier gets deleted.
+      const today = new Date();
+      const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 2);
+      const cutoffStr = cutoff.toLocaleDateString('sv-SE'); // YYYY-MM-DD (local)
+      const result = db.prepare(`
+        DELETE FROM meal_orders
+        WHERE service_date < ?
+      `).run(cutoffStr);
+      if (result.changes > 0) {
+        console.log(`[${label}] deleted ${result.changes} orders older than ${cutoffStr} (3-day retention)`);
+      } else {
+        console.log(`[${label}] no stale orders to delete (cutoff=${cutoffStr})`);
+      }
+    } catch (e) {
+      console.error(`[${label}] error:`, e);
+    }
+  }
+
   function scheduleMidnightCleanup() {
     const now = new Date();
-    // Next midnight (local)
-    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5); // 00:00:05
+    // Next midnight (local) + 5s buffer
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
     const msUntil = next - now;
     setTimeout(() => {
-      try {
-        const today = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
-        const result = db.prepare(`
-          DELETE FROM meal_orders
-          WHERE service_date < ?
-        `).run(today);
-        console.log(`[midnight cleanup] deleted ${result.changes} orders older than ${today}`);
-      } catch (e) {
-        console.error('[midnight cleanup] error:', e);
-      }
+      cleanupPastOrders('midnight cleanup');
       scheduleMidnightCleanup(); // reschedule for next midnight
     }, msUntil);
     console.log(`[midnight cleanup] scheduled in ${Math.round(msUntil / 60000)}min`);
   }
+  // Run once on startup so stale data is gone immediately
+  cleanupPastOrders('startup cleanup');
   scheduleMidnightCleanup();
   // ──────────────────────────────────────────────────────────────────────────
 

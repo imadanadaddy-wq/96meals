@@ -19,8 +19,9 @@
   let applicantStep = 'home';      // 'home' | 'date' | 'menu' | 'done'
   let draftMealType = null;
   let draftDates = [];
-  let draftMenuName = '';
+  let draftMenuName = '';                // legacy, kept for backward compat (unused for new flow)
   let draftCustomText = '';
+  let draftLnPriority = [];              // late_night: array of menu names in priority order (max 3)
 
   // Breakfast draft
   let bfStep = null;               // null | 'form' | 'kimbap' | 'cat1' | 'tier' | 'fallback' | 'note'
@@ -46,12 +47,21 @@
 
   // Admin
   let adminMealTab = 'breakfast';
+  let adminLogDate = null;        // selected date string for pickup log
+  let adminLogDates = [];         // dates with order activity (within retention)
+  let adminLogOrders = [];        // orders for selected date
   let adminItems = [];
   let breakfastStructure = [];
   let adminBreakfastExpanded = new Set();
   let kimbapOptions = [];
 
   let menuItemsCache = { breakfast: [], late_night: [] };
+  // For late_night: keyed by date → { items, period, is_holiday, kind }
+  let lateNightMenuByDate = {};
+  // Holidays cache (Set of YYYY-MM-DD)
+  let holidaysSet = new Set();
+  // Late-night menu periods (admin manages)
+  let menuPeriods = [];
 
   // ===== Storage =====
   function loadStored() {
@@ -269,6 +279,7 @@
           const isToday = d === today;
           const dow = dayOfWeek(d);
           const dt = new Date(d + 'T00:00:00');
+          const isHoliday = holidaysSet.has(d);
           const cls = [
             'date-chip',
             isSel ? 'selected' : '',
@@ -276,11 +287,13 @@
             dow === 0 ? 'sun' : '',
             dow === 6 ? 'sat' : '',
             withOrdersDates.has(d) ? 'has-orders' : '',
+            isHoliday ? 'holiday' : '',
           ].filter(Boolean).join(' ');
           return `
-            <button class="${cls}" data-date="${d}">
+            <button class="${cls}" data-date="${d}" title="${isHoliday ? '매장 휴무일' : ''}">
               <span class="dow">${DOW_KR[dow]}</span>
               <span class="day">${dt.getDate()}</span>
+              ${isHoliday ? '<span class="holiday-mark">휴</span>' : ''}
             </button>
           `;
         }).join('')}
@@ -385,6 +398,7 @@
         draftDates = [todayStr()];
         draftMenuName = '';
         draftCustomText = '';
+        draftLnPriority = [];
         resetBreakfastDraft();
         applicantStep = 'date';
         renderApplicantStep();
@@ -487,72 +501,200 @@
     return renderApplicantLateNightMenu();
   }
 
+  async function fetchLateNightMenuForDate(date) {
+    if (lateNightMenuByDate[date]) return lateNightMenuByDate[date];
+    try {
+      const r = await api(`/api/menu-items?meal_type=late_night&date=${encodeURIComponent(date)}`);
+      lateNightMenuByDate[date] = r;
+      return r;
+    } catch (e) {
+      return { period: null, kind: 'weekday', is_holiday: false, items: [] };
+    }
+  }
+
   function renderApplicantLateNightMenu() {
-    const items = menuItemsCache.late_night || [];
+    // Pre-flight check: do all selected dates share the same kind (weekday vs holiday)?
+    // If mixed, ask the user to split the request.
+    const kinds = new Set(draftDates.map(d => holidaysSet.has(d) ? 'holiday' : 'weekday'));
+    const mixed = kinds.size > 1;
+
     const dateLabel = draftDates.length === 1
       ? fmtFull(draftDates[0])
       : `${draftDates.length}일 (${draftDates.map(d => fmtDate(d, { withDow: false })).join(', ')})`;
 
+    if (mixed) {
+      const holidayDates = draftDates.filter(d => holidaysSet.has(d));
+      const weekdayDates = draftDates.filter(d => !holidaysSet.has(d));
+      root.innerHTML = `
+        ${renderBrand()}
+        ${applicantHeader(`🍜 야식 신청`, { onBack: true, step: 2, totalSteps: 3 })}
+        <div class="card step-card">
+          <h2 class="step-h">⚠️ 휴무일이 섞여있어요</h2>
+          <p class="step-desc">선택한 날짜에 매장 휴무일과 상시일이 함께 있어 메뉴가 다릅니다. 분리해서 신청해주세요.</p>
+          <div class="ln-split-info">
+            <div class="ln-split-row">
+              <span class="ln-split-label">상시일</span>
+              <span class="ln-split-dates">${weekdayDates.map(d => fmtDate(d, { withDow: true })).join(', ')}</span>
+            </div>
+            <div class="ln-split-row holiday">
+              <span class="ln-split-label">매장 휴무일</span>
+              <span class="ln-split-dates">${holidayDates.map(d => fmtDate(d, { withDow: true })).join(', ')}</span>
+            </div>
+          </div>
+          <div class="step-action" style="margin-top:14px;">
+            <button class="btn btn-primary" id="splitToWeekday">${weekdayDates.length}일(상시) 먼저 신청</button>
+            <button class="btn" id="splitToHoliday" style="margin-top:6px;">${holidayDates.length}일(휴무일) 먼저 신청</button>
+          </div>
+        </div>
+      `;
+      $('#stepBack').addEventListener('click', () => { applicantStep = 'date'; renderApplicantStep(); });
+      $('#splitToWeekday').addEventListener('click', () => {
+        draftDates = weekdayDates;
+        renderApplicantLateNightMenu();
+      });
+      $('#splitToHoliday').addEventListener('click', () => {
+        draftDates = holidayDates;
+        renderApplicantLateNightMenu();
+      });
+      return;
+    }
+
+    // All dates share the same kind. Fetch menu for the first date (representative).
+    const repDate = draftDates[0];
+    const isHoliday = holidaysSet.has(repDate);
+
+    // Show loading state then re-render with items
     root.innerHTML = `
       ${renderBrand()}
       ${applicantHeader(`🍜 야식 신청`, { onBack: true, step: 2, totalSteps: 3 })}
-
       <div class="card step-card">
-        <h2 class="step-h">메뉴 선택</h2>
-        <p class="step-desc">${escape(dateLabel)}</p>
-
-        ${items.length === 0 ? `
-          <div class="empty" style="margin-top:8px;">
-            <span class="empty-emoji">📭</span>
-            등록된 메뉴가 없습니다. 직접 입력으로 신청해주세요.
-          </div>
-        ` : `
-          <div class="menu-grid">
-            ${items.map(it => `
-              <button class="menu-chip ${draftMenuName===it.name?'selected':''}" data-menu="${escape(it.name)}">
-                ${escape(it.name)}
-              </button>
-            `).join('')}
-          </div>
-        `}
-
-        <div class="field" style="margin-top:14px;margin-bottom:0;">
-          <label for="menuInput">직접 입력 (선택)</label>
-          <textarea class="textarea" id="menuInput" maxlength="200"
-            placeholder="예: 컵라면, 안 매운걸로 / 죽 (전복죽 선호)">${escape(draftCustomText)}</textarea>
-        </div>
-      </div>
-
-      <div class="step-action">
-        <button class="btn btn-primary" id="stepSubmit">
-          ${draftDates.length === 1 ? '신청하기' : `${draftDates.length}일 신청하기`}
-        </button>
+        <h2 class="step-h">메뉴 불러오는 중...</h2>
       </div>
     `;
-
     $('#stepBack').addEventListener('click', () => { applicantStep = 'date'; renderApplicantStep(); });
 
-    document.querySelectorAll('[data-menu]').forEach(b =>
-      b.addEventListener('click', () => {
-        draftMenuName = b.dataset.menu;
-        draftCustomText = '';
-        renderApplicantLateNightMenu();
-      }));
+    fetchLateNightMenuForDate(repDate).then(menuInfo => {
+      const items = menuInfo.items || [];
+      const period = menuInfo.period;
 
-    const ta = $('#menuInput');
-    ta.addEventListener('input', () => {
-      draftCustomText = ta.value;
-      if (draftCustomText && draftMenuName) {
-        draftMenuName = '';
-        document.querySelectorAll('.menu-chip.selected').forEach(c => c.classList.remove('selected'));
+      root.innerHTML = `
+        ${renderBrand()}
+        ${applicantHeader(`🍜 야식 신청`, { onBack: true, step: 2, totalSteps: 3 })}
+
+        <div class="card step-card">
+          <h2 class="step-h">메뉴 선택</h2>
+          <p class="step-desc">${escape(dateLabel)}</p>
+
+          ${isHoliday ? `
+            <div class="ln-day-banner holiday">
+              <span class="ln-banner-emoji">🏪</span>
+              <div>
+                <div class="ln-banner-title">매장 휴무일</div>
+                <div class="ln-banner-sub">상시일과 메뉴 구성이 다릅니다 (보통 4종)</div>
+              </div>
+            </div>
+          ` : `
+            <div class="ln-day-banner">
+              <span class="ln-banner-emoji">🍽️</span>
+              <div>
+                <div class="ln-banner-title">상시일</div>
+                <div class="ln-banner-sub">평일 야식 메뉴 (보통 5종)</div>
+              </div>
+            </div>
+          `}
+
+          ${period ? `
+            <div class="ln-period-tag">${escape(period.label)} (${period.start_date.slice(5)} ~ ${period.end_date.slice(5)})</div>
+          ` : ''}
+
+          ${items.length === 0 ? `
+            <div class="empty" style="margin-top:14px;">
+              <span class="empty-emoji">📭</span>
+              ${period ? '이 기간에 등록된 메뉴가 없습니다' : '해당 날짜에 정의된 메뉴 기간이 없습니다'}<br/>
+              <span style="font-size:11px;color:var(--muted);">직접 입력으로 신청 가능합니다</span>
+            </div>
+          ` : `
+            <p class="ln-priority-hint">
+              ${draftLnPriority.length === 0
+                ? '메뉴를 탭하면 1순위로 추가됩니다. 다른 메뉴를 추가로 탭하면 2·3순위로 추가돼요 (최대 3개)'
+                : `${draftLnPriority.length}개 선택됨${draftLnPriority.length >= 3 ? ' · 최대 도달' : ' · 더 추가하려면 다른 메뉴 탭'}`}
+            </p>
+            <div class="menu-grid">
+              ${items.map(it => {
+                const idx = draftLnPriority.indexOf(it.name);
+                const isSel = idx >= 0;
+                const rank = idx + 1;
+                return `
+                  <button class="menu-chip ln-chip ${isSel ? 'selected' : ''}" data-menu="${escape(it.name)}">
+                    ${isSel ? `<span class="ln-chip-rank">${rank}</span>` : ''}
+                    <span>${escape(it.name)}</span>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          `}
+
+          <div class="field" style="margin-top:14px;margin-bottom:0;">
+            <label for="menuInput">직접 입력 (선택)</label>
+            <textarea class="textarea" id="menuInput" maxlength="200"
+              placeholder="예: 안 매운걸로 / 채식">${escape(draftCustomText)}</textarea>
+          </div>
+        </div>
+
+        <div class="step-action">
+          <button class="btn btn-primary" id="stepSubmit" ${(draftLnPriority.length === 0 && !draftCustomText.trim()) ? 'disabled' : ''}>
+            ${(draftLnPriority.length === 0 && !draftCustomText.trim())
+              ? '메뉴를 선택해주세요'
+              : (draftDates.length === 1 ? '신청하기' : `${draftDates.length}일 신청하기`)}
+          </button>
+        </div>
+      `;
+
+      $('#stepBack').addEventListener('click', () => { applicantStep = 'date'; renderApplicantStep(); });
+
+      document.querySelectorAll('[data-menu]').forEach(b =>
+        b.addEventListener('click', () => {
+          const name = b.dataset.menu;
+          const i = draftLnPriority.indexOf(name);
+          if (i >= 0) {
+            draftLnPriority.splice(i, 1);
+          } else {
+            if (draftLnPriority.length >= 3) {
+              toast('최대 3개까지만 선택할 수 있어요');
+              return;
+            }
+            draftLnPriority.push(name);
+          }
+          renderApplicantLateNightMenu();
+        }));
+
+      const ta = $('#menuInput');
+      if (ta) {
+        ta.addEventListener('input', () => {
+          draftCustomText = ta.value;
+          // Just re-enable the submit button label; no full re-render to keep focus
+          const btn = $('#stepSubmit');
+          if (btn) {
+            const hasAny = draftLnPriority.length > 0 || draftCustomText.trim();
+            btn.disabled = !hasAny;
+            btn.textContent = !hasAny
+              ? '메뉴를 선택해주세요'
+              : (draftDates.length === 1 ? '신청하기' : `${draftDates.length}일 신청하기`);
+          }
+        });
       }
-    });
 
-    $('#stepSubmit').addEventListener('click', async () => {
-      const menu = (draftCustomText || ta.value || '').trim() || draftMenuName;
-      if (!menu) { toast('메뉴를 선택하거나 입력해주세요'); return; }
-      await submitOrders({ menu });
-    });
+      $('#stepSubmit').addEventListener('click', async () => {
+        const taEl = $('#menuInput');
+        const custom = ((taEl ? taEl.value : '') || draftCustomText || '').trim();
+        if (draftLnPriority.length === 0 && !custom) {
+          toast('메뉴를 선택하거나 입력해주세요'); return;
+        }
+        await submitOrders({
+          selection: { priority: draftLnPriority.slice(), custom },
+        });
+      });
+    });  // end of fetchLateNightMenuForDate().then(...)
   }
 
   function renderApplicantBreakfastMenu() {
@@ -1193,6 +1335,7 @@
     draftDates = [];
     draftMenuName = '';
     draftCustomText = '';
+    draftLnPriority = [];
     resetBreakfastDraft();
     renderApplicantHome();
   }
@@ -1220,7 +1363,6 @@
       const r = activeSummary.find(x => x.service_date === d && x.meal_type === mt);
       return r ? r.n : 0;
     };
-    const totalFor = (mt) => activeSummary.filter(x => x.meal_type === mt).reduce((s, x) => s + x.n, 0);
 
     root.innerHTML = `
       ${renderBrand()}
@@ -1235,12 +1377,12 @@
         <button class="choice-card breakfast" data-meal="breakfast">
           <span class="emoji">🍳</span>
           <span class="name">조식</span>
-          <span class="count">오늘 ${countFor('breakfast', today)} · 내일 ${countFor('breakfast', tomorrow)} · 전체 ${totalFor('breakfast')}</span>
+          <span class="count">오늘 ${countFor('breakfast', today)} · 내일 ${countFor('breakfast', tomorrow)}</span>
         </button>
         <button class="choice-card late_night" data-meal="late_night">
           <span class="emoji">🍜</span>
           <span class="name">야식</span>
-          <span class="count">오늘 ${countFor('late_night', today)} · 내일 ${countFor('late_night', tomorrow)} · 전체 ${totalFor('late_night')}</span>
+          <span class="count">오늘 ${countFor('late_night', today)} · 내일 ${countFor('late_night', tomorrow)}</span>
         </button>
       </div>
     `;
@@ -1356,19 +1498,32 @@
           </div>
         ` : groups.map(g => `
           ${g.label ? `<div class="group-header">${g.label} <span class="group-count">${g.items.length}</span></div>` : ''}
-          ${g.items.map(o => `
-            <button class="order-card ${(o.selection && o.selection.meal_form === 'no_meal') ? 'no-meal' : ''}" data-id="${o.id}">
-              <div class="meal-badge ${o.meal_type}">${(o.selection && o.selection.meal_form === 'no_meal') ? '🙅‍♀️' : mealEmoji(o.meal_type)}</div>
-              <div class="order-body">
-                <div class="order-name">
-                  ${escape(o.name)}
-                  <span class="order-eid">${escape(o.employee_id)}</span>
+          ${g.items.map(o => {
+            const isNoMeal = o.selection && o.selection.meal_form === 'no_meal';
+            const isLateNight = o.meal_type === 'late_night';
+            const showQuickPickup = isLateNight && !isNoMeal;
+            return `
+              <div class="order-card ${isNoMeal ? 'no-meal' : ''} ${showQuickPickup ? 'with-quick' : ''}" data-card-id="${o.id}">
+                <div class="order-main" data-id="${o.id}">
+                  <div class="meal-badge ${o.meal_type}">${isNoMeal ? '🙅‍♀️' : mealEmoji(o.meal_type)}</div>
+                  <div class="order-body">
+                    <div class="order-name">
+                      ${escape(o.name)}
+                      <span class="order-eid">${escape(o.employee_id)}</span>
+                    </div>
+                    ${renderOrderDetailDark(o)}
+                  </div>
+                  ${showQuickPickup ? '' : '<div class="order-chevron">›</div>'}
                 </div>
-                ${renderOrderDetailDark(o)}
+                ${showQuickPickup ? `
+                  <button class="quick-pickup" data-quick-pickup="${o.id}" aria-label="수령 완료">
+                    <span class="qp-check">✓</span>
+                    <span class="qp-text">수령<br/>완료</span>
+                  </button>
+                ` : ''}
               </div>
-              <div class="order-chevron">›</div>
-            </button>
-          `).join('')}
+            `;
+          }).join('')}
         `).join('')}
       </div>
     `;
@@ -1389,7 +1544,7 @@
         renderActingList();
       }));
 
-    document.querySelectorAll('.order-card').forEach(c =>
+    document.querySelectorAll('.order-main').forEach(c =>
       c.addEventListener('click', () => {
         const id = Number(c.dataset.id);
         // Find the order
@@ -1397,10 +1552,20 @@
         if (!order) return;
         // no_meal orders open in a simpler info modal (no barcode pickup loop)
         if (order.selection && order.selection.meal_form === 'no_meal') {
-          openNoMealInfo(order);
+          openNoMealInfo(order, {
+            onConfirmed: async () => {
+              toast('미수령으로 처리되었습니다');
+              await Promise.all([loadActiveOrders(), loadActiveSummary()]);
+              renderActing();
+            }
+          });
           return;
         }
-        // For pickup-able orders, open viewer with the pickupable list (skip no_meal so swipe stays useful)
+        // Late-night: card body click is a no-op since the quick-pickup button handles it.
+        if (order.meal_type === 'late_night') {
+          return;
+        }
+        // Breakfast (snack_pick / kimbap): open barcode viewer
         const list = pickupableOrders;
         const startIdx = list.findIndex(o => o.id === id);
         if (startIdx >= 0) {
@@ -1413,10 +1578,34 @@
           });
         }
       }));
+
+    // Late-night quick-pickup button: pick up directly without opening modal
+    document.querySelectorAll('[data-quick-pickup]').forEach(b =>
+      b.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const id = Number(b.dataset.quickPickup);
+        const order = activeOrders.find(o => o.id === id);
+        const name = order ? order.name : '';
+        b.disabled = true;
+        // Visual confirmation: card briefly turns green
+        const card = b.closest('.order-card');
+        if (card) card.classList.add('picking-up');
+        try {
+          await api(`/api/orders/${id}/pickup`, { method: 'POST' });
+          if (name) toast(`✓ ${name} 수령 완료`);
+          await Promise.all([loadActiveOrders(), loadActiveSummary()]);
+          renderActing();
+        } catch (e) {
+          if (card) card.classList.remove('picking-up');
+          b.disabled = false;
+          toast(e.message);
+        }
+      }));
   }
 
   // Lightweight info card for no_meal orders (no barcode shown — nothing to scan)
-  function openNoMealInfo(order) {
+  function openNoMealInfo(order, opts = {}) {
+    const onConfirmed = opts.onConfirmed || (() => {});
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
@@ -1441,8 +1630,12 @@
               ${escape(order.selection.note)}
             </div>
           ` : ''}
+          <p style="margin-top:14px;font-size:12px;color:#666;line-height:1.5;">
+            확인을 누르면 목록에서 제거되어 더 이상 액팅 화면에 보이지 않습니다.
+          </p>
           <div class="modal-actions" style="margin-top:16px;">
             <button class="btn btn-ghost-light" data-close>닫기</button>
+            <button class="btn" data-confirm-no-meal>확인 (제거)</button>
           </div>
         </div>
       </div>
@@ -1453,9 +1646,24 @@
       overlay.remove();
       document.body.style.overflow = '';
     }
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close();
-      if (e.target.closest && e.target.closest('[data-close]')) close();
+    overlay.addEventListener('click', async (e) => {
+      if (e.target === overlay) { close(); return; }
+      if (e.target.closest && e.target.closest('[data-close]')) { close(); return; }
+      if (e.target.closest && e.target.closest('[data-confirm-no-meal]')) {
+        const btn = e.target.closest('[data-confirm-no-meal]');
+        btn.disabled = true;
+        btn.textContent = '처리 중...';
+        try {
+          // Mark as picked_up so it's removed from the pending list
+          await api(`/api/orders/${order.id}/pickup`, { method: 'POST' });
+          close();
+          await onConfirmed();
+        } catch (err) {
+          toast(err.message);
+          btn.disabled = false;
+          btn.textContent = '확인 (제거)';
+        }
+      }
     });
     document.addEventListener('keydown', function esc(e) {
       if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
@@ -1500,6 +1708,13 @@
           .map(s => s.priority.join('→')).join(' | ');
         return `${sel.category_name ? escape(sel.category_name) + ' · ' : ''}${parts}${sel.note ? ` 📝 ${escape(sel.note)}` : ''}`;
       }
+    }
+    if (order.meal_type === 'late_night' && sel && Array.isArray(sel.priority) && sel.priority.length > 0) {
+      const parts = sel.priority.map((name, i) =>
+        `<span class="vc-tier-chip ${i === 0 ? 'primary' : 'secondary'}">${i+1}순위 ${escape(name)}</span>`
+      ).join('');
+      const note = sel.custom ? ` <span class="vc-note">📝 ${escape(sel.custom)}</span>` : '';
+      return parts + note;
     }
     return escape(order.menu);
   }
@@ -1605,7 +1820,7 @@
       }
       if (sel.meal_form === 'snack_pick') {
         const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
-        const tierLine = prios.map((cc, i) => {
+        const rows = prios.map((cc, i) => {
           const cat = breakfastStructure.find(c => c.id === Number(cc.category_id));
           const emoji = (cat && cat.emoji) || cc.category_emoji || '';
           const name = escape((cat && cat.name) || cc.category_name || '');
@@ -1617,10 +1832,11 @@
             return txt;
           }).filter(Boolean);
           const detail = optParts.join(' | ');
-          return `<span class="d-rank">${i+1}</span>${emoji}${name}${detail ? ' · ' + detail : ''}`;
-        }).join(' <span class="sep">→</span> ');
-        const extra = (sel.fallback_any ? ' 🎲' : '') + (sel.note ? ` 📝${escape(sel.note)}` : '');
-        return `<div class="order-menu compact"><span class="tier-inline">🥣 ${tierLine}${extra}</span></div>`;
+          return `<div class="rank-row-dark"><span class="d-rank">${i+1}</span><span class="rank-row-text">${emoji}${name}${detail ? ' · ' + detail : ''}</span></div>`;
+        });
+        if (sel.fallback_any) rows.push(`<div class="rank-row-dark"><span class="rank-row-text muted-rank">🎲 아무거나</span></div>`);
+        if (sel.note) rows.push(`<div class="rank-row-dark"><span class="rank-row-text muted-rank">📝 ${escape(sel.note)}</span></div>`);
+        return `<div class="order-menu-rows">${rows.join('')}</div>`;
       }
       // Legacy slots
       if (Array.isArray(sel.slots)) {
@@ -1630,6 +1846,18 @@
         const catLabel = sel.category_name ? `[${escape(sel.category_name)}] ` : '';
         return `<div class="order-menu compact">${catLabel}${parts}${sel.note ? ` 📝${escape(sel.note)}` : ''}</div>`;
       }
+    }
+    // Late-night with priority selection
+    if (order.meal_type === 'late_night' && sel && Array.isArray(sel.priority) && sel.priority.length > 0) {
+      const rows = sel.priority.map((name, i) =>
+        `<span class="d-pri"><span class="d-rank">${i+1}</span>${escape(name)}</span>`
+      ).join('');
+      return `
+        <div class="struct-mini">
+          ${rows ? `<div class="d-row" style="flex-wrap:wrap;gap:4px;">${rows}</div>` : ''}
+          ${sel.custom ? `<div class="struct-note">📝 ${escape(sel.custom)}</div>` : ''}
+        </div>
+      `;
     }
     return `<div class="order-menu">${escape(order.menu)}</div>`;
   }
@@ -1689,7 +1917,8 @@
         <div class="vc-eid">사번 ${escape(order.employee_id || user.employee_id)}</div>
         ${isLateNight ? `
           <div class="late-night-menu-block">
-            <div class="late-night-menu-text">${escape(order.menu || '')}</div>
+            <div class="ln-viewer-label">야식 메뉴</div>
+            <div class="vc-menu-summary">${renderMenuOneLine(order)}</div>
           </div>
         ` : `
           <div class="barcode-wrap">
@@ -1852,6 +2081,8 @@
         <button class="tab ${adminMealTab==='breakfast'?'active':''}" data-tab="breakfast">🍳 조식 구조</button>
         <button class="tab ${adminMealTab==='late_night'?'active':''}" data-tab="late_night">🍜 야식 메뉴</button>
         <button class="tab ${adminMealTab==='manual'?'active':''}" data-tab="manual">📋 수동 입력</button>
+        <button class="tab ${adminMealTab==='log'?'active':''}" data-tab="log">📊 수령 로그</button>
+        <button class="tab ${adminMealTab==='notice'?'active':''}" data-tab="notice">📢 공지</button>
       </div>
 
       <div id="adminBody"></div>
@@ -1863,6 +2094,8 @@
 
     if (adminMealTab === 'breakfast') renderAdminBreakfast();
     else if (adminMealTab === 'manual') renderAdminManual();
+    else if (adminMealTab === 'log') renderAdminLog();
+    else if (adminMealTab === 'notice') renderAdminNotice();
     else renderAdminLateNight();
   }
 
@@ -2390,36 +2623,423 @@
     }
   }
 
-  function renderAdminLateNight() {
-    const items = adminItems;
+  // ===== Admin: Pickup Log =====
+  async function renderAdminLog() {
+    // Load activity dates (with counts) on first render
+    if (!adminLogDate) {
+      adminLogDate = todayStr();
+    }
+    try {
+      adminLogDates = await api('/api/admin/pickup-log/dates');
+    } catch (e) {
+      adminLogDates = [];
+      toast(e.message);
+    }
+    await loadAdminLogOrders();
+    renderAdminLogContent();
+  }
+
+  async function loadAdminLogOrders() {
+    try {
+      adminLogOrders = await api(`/api/admin/pickup-log?date=${encodeURIComponent(adminLogDate)}`);
+    } catch (e) {
+      adminLogOrders = [];
+      toast(e.message);
+    }
+  }
+
+  function renderAdminLogContent() {
+    const todayS = todayStr();
+    // Build last 3 days (retention window)
+    const dateOptions = [];
+    for (let i = 0; i < 3; i++) {
+      dateOptions.push(addDays(todayS, -i));
+    }
+
+    const countByDate = {};
+    for (const d of adminLogDates) {
+      countByDate[d.service_date] = d;
+    }
+
+    // Split orders into picked/pending
+    const breakfast = { picked: [], pending: [] };
+    const late_night = { picked: [], pending: [] };
+    for (const o of adminLogOrders) {
+      const bucket = o.meal_type === 'breakfast' ? breakfast : late_night;
+      if (o.status === 'picked_up') bucket.picked.push(o);
+      else bucket.pending.push(o);
+    }
+
+    const totalCount = adminLogOrders.length;
+    const pickedCount = breakfast.picked.length + late_night.picked.length;
+    const pendingCount = totalCount - pickedCount;
+
     $('#adminBody').innerHTML = `
-      <div class="section-title">
-        <h2>야식 메뉴 (${items.filter(i=>i.active).length}개 활성)</h2>
+      <p style="margin:4px 4px 12px;color:var(--muted);font-size:13px;">
+        오늘 포함 최근 <strong>3일치</strong> 수령 기록을 볼 수 있어요. 그 이상은 자동 삭제됩니다.
+      </p>
+
+      <div class="log-date-row">
+        ${dateOptions.map(d => {
+          const info = countByDate[d];
+          const total = info ? info.total : 0;
+          const picked = info ? info.picked : 0;
+          const isSel = d === adminLogDate;
+          const dow = new Date(d + 'T00:00:00').getDay();
+          const dowKor = ['일','월','화','수','목','금','토'][dow];
+          const isToday = d === todayS;
+          const label = isToday ? '오늘' : (d === addDays(todayS, -1) ? '어제' : '그저께');
+          return `
+            <button class="log-date-card ${isSel ? 'sel' : ''} ${total === 0 ? 'empty' : ''}" data-log-date="${d}">
+              <div class="ldc-label">${label}</div>
+              <div class="ldc-date">${d.slice(5)} (${dowKor})</div>
+              <div class="ldc-counts">
+                ${total === 0 ? '<span class="ldc-empty">신청 없음</span>'
+                  : `<span class="ldc-picked">✓ ${picked}</span> · <span class="ldc-total">총 ${total}</span>`}
+              </div>
+            </button>
+          `;
+        }).join('')}
       </div>
 
-      <div class="admin-list">
-        ${items.length === 0 ? `
-          <div class="empty"><span class="empty-emoji">📭</span>아직 등록된 메뉴가 없습니다</div>
-        ` : items.map(it => `
-          <div class="admin-row ${it.active ? '' : 'inactive'}">
-            <div class="name">${escape(it.name)}</div>
-            <button data-toggle="${it.id}" data-active="${it.active}">${it.active ? '숨기기' : '보이기'}</button>
-            <button class="del" data-del="${it.id}" data-name="${escape(it.name)}">삭제</button>
+      ${totalCount === 0 ? `
+        <div class="empty" style="margin-top:18px;">
+          <span class="empty-emoji">📭</span>
+          ${fmtDate(adminLogDate)}에 신청 기록이 없습니다
+        </div>
+      ` : `
+        <div class="log-stats">
+          <div class="log-stat-card picked">
+            <div class="ls-num">${pickedCount}</div>
+            <div class="ls-lbl">✓ 수령 완료</div>
           </div>
-        `).join('')}
-      </div>
+          <div class="log-stat-card pending">
+            <div class="ls-num">${pendingCount}</div>
+            <div class="ls-lbl">⏳ 미수령 (대기 중)</div>
+          </div>
+        </div>
 
-      <div class="section-title"><h2>새 메뉴 추가</h2></div>
-      <div class="add-row">
-        <input class="input" id="newName" maxlength="50" placeholder="예: 컵라면" />
-        <button class="btn btn-primary" id="addBtn">추가</button>
-      </div>
-      <p class="muted-note">활성 상태인 항목만 신청자에게 보입니다.</p>
+        ${renderLogSection('🍳 조식', breakfast)}
+        ${renderLogSection('🍜 야식', late_night)}
+      `}
     `;
 
-    document.querySelectorAll('[data-toggle]').forEach(b =>
+    document.querySelectorAll('[data-log-date]').forEach(b =>
       b.addEventListener('click', async () => {
-        const id = Number(b.dataset.toggle);
+        adminLogDate = b.dataset.logDate;
+        await loadAdminLogOrders();
+        renderAdminLogContent();
+      }));
+  }
+
+  function renderLogSection(title, bucket) {
+    const total = bucket.picked.length + bucket.pending.length;
+    if (total === 0) return '';
+    // Combine: picked sorted by picked_up_at desc, then pending sorted by created_at
+    const sortedPicked = bucket.picked.slice().sort((a, b) =>
+      (b.picked_up_at || '').localeCompare(a.picked_up_at || '')
+    );
+    const sortedPending = bucket.pending.slice().sort((a, b) =>
+      (a.created_at || '').localeCompare(b.created_at || '')
+    );
+    return `
+      <div class="section-title" style="margin-top:18px;">
+        <h2>${title} (${total})</h2>
+      </div>
+      <div class="log-list">
+        ${sortedPicked.map(o => renderLogRow(o)).join('')}
+        ${sortedPending.map(o => renderLogRow(o)).join('')}
+      </div>
+    `;
+  }
+
+  function renderLogRow(o) {
+    const isPicked = o.status === 'picked_up';
+    const isNoMeal = o.selection && o.selection.meal_form === 'no_meal';
+    const time = isPicked && o.picked_up_at
+      ? new Date(o.picked_up_at + 'Z').toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+      : '';
+    const statusLabel = isPicked
+      ? (isNoMeal ? '🙅 미수령 확인됨' : `✓ 수령 ${time}`)
+      : (isNoMeal ? '⏳ 미수령 대기' : '⏳ 미수령');
+    const menuSummary = renderLogMenuSummary(o);
+    return `
+      <div class="log-row ${isPicked ? 'picked' : 'pending'} ${isNoMeal ? 'no-meal' : ''}">
+        <div class="lr-head">
+          <span class="lr-name">${escape(o.name)}</span>
+          <span class="lr-eid">${escape(o.employee_id)}</span>
+          <span class="lr-status">${statusLabel}</span>
+        </div>
+        <div class="lr-menu">${menuSummary}</div>
+      </div>
+    `;
+  }
+
+  function renderLogMenuSummary(o) {
+    const sel = o.selection;
+    if (!sel) return escape(o.menu || '');
+    if (sel.meal_form === 'no_meal') {
+      return `🚫 식사 안 받음${sel.note ? ` · 📝 ${escape(sel.note)}` : ''}`;
+    }
+    if (sel.meal_form === 'kimbap') {
+      return `🍙 ${escape(sel.kimbap_choice || '')}${sel.note ? ` · 📝 ${escape(sel.note)}` : ''}`;
+    }
+    if (sel.meal_form === 'snack_pick') {
+      const prios = Array.isArray(sel.category_priorities) ? sel.category_priorities : [];
+      const summary = prios.map((cc, i) => `${i+1}순위 ${escape(cc.category_name || '')}`).join(' → ');
+      return `🥣 ${summary}${sel.fallback_any ? ' → 🎲' : ''}${sel.note ? ` · 📝 ${escape(sel.note)}` : ''}`;
+    }
+    // Late-night with priority selection
+    if (Array.isArray(sel.priority) && sel.priority.length > 0) {
+      const summary = sel.priority.map((name, i) => `${i+1}순위 ${escape(name)}`).join(' → ');
+      return `🍜 ${summary}${sel.custom ? ` · 📝 ${escape(sel.custom)}` : ''}`;
+    }
+    return escape(o.menu || '');
+  }
+
+  // ===== Admin: Notice Management =====
+  async function renderAdminNotice() {
+    let notices = [];
+    try { notices = await api('/api/admin/notices'); } catch(e) { toast(e.message); }
+
+    const fmtExpire = (v) => {
+      if (!v) return '<span style="color:var(--muted)">만료 없음</span>';
+      const d = new Date(v);
+      return d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    };
+    const isExpired = (v) => v && new Date(v) < new Date();
+    const isActive = (n) => n.active && !isExpired(n.expire_at);
+
+    $('#adminBody').innerHTML = `
+      <p class="muted-note" style="margin-bottom:12px;">
+        활성 공지는 사용자가 앱에 접속할 때 팝업으로 1회 표시됩니다.
+        한 번에 1개만 보이며, 가장 최근 활성 공지가 우선합니다.
+      </p>
+
+      <!-- 공지 목록 -->
+      <div class="section-title"><h2>등록된 공지 (${notices.length}개)</h2></div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px;">
+        ${notices.length === 0 ? `<div class="empty"><span class="empty-emoji">📭</span>등록된 공지가 없습니다</div>` :
+          notices.map(n => `
+            <div class="period-card ${isActive(n) ? '' : 'inactive'}">
+              <div class="period-head">
+                <span class="period-kind ${isActive(n) ? 'weekday' : 'orphan'}">
+                  ${isExpired(n.expire_at) ? '⏰ 만료됨' : n.active ? '📢 활성' : '🔕 꺼짐'}
+                </span>
+                <span class="period-label" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escape(n.title)}</span>
+                <div class="period-actions">
+                  <button class="btn-sm btn-ghost" data-notice-toggle="${n.id}" data-active="${n.active}">
+                    ${n.active ? '끄기' : '켜기'}
+                  </button>
+                  <button class="btn-sm btn-ghost" style="color:#ef4444;" data-notice-del="${n.id}" data-title="${escape(n.title)}">삭제</button>
+                </div>
+              </div>
+              <div class="period-body">
+                <div style="font-size:13px;color:var(--text-soft);white-space:pre-wrap;line-height:1.65;margin-bottom:8px;">${escape(n.body)}</div>
+                <div style="font-size:11px;color:var(--muted);">
+                  만료: ${fmtExpire(n.expire_at)} &nbsp;·&nbsp;
+                  등록: ${new Date(n.created_at).toLocaleDateString('ko-KR', {month:'long',day:'numeric'})}
+                </div>
+              </div>
+            </div>
+          `).join('')}
+      </div>
+
+      <!-- 새 공지 작성 -->
+      <div class="section-title"><h2>새 공지 작성</h2></div>
+      <div class="period-add-form">
+        <div class="field" style="margin-bottom:8px;">
+          <label style="font-size:11px;font-weight:700;color:var(--text-soft);display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em;">제목</label>
+          <input class="input" id="noticeTitle" maxlength="100" placeholder="예: 서버 점검 안내" style="width:100%;"/>
+        </div>
+        <div class="field" style="margin-bottom:8px;">
+          <label style="font-size:11px;font-weight:700;color:var(--text-soft);display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em;">내용</label>
+          <textarea class="textarea" id="noticeBody" maxlength="1000" rows="4"
+            placeholder="예: 오늘 조식 수령 시간에 서버 장애로 불편을 드려 죄송합니다."></textarea>
+        </div>
+        <div class="field" style="margin-bottom:12px;">
+          <label style="font-size:11px;font-weight:700;color:var(--text-soft);display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em;">
+            만료 일시 <span style="font-weight:400;color:var(--muted)">(비워두면 수동으로 끄기 전까지 표시)</span>
+          </label>
+          <input class="input" id="noticeExpire" type="datetime-local" style="width:100%;"/>
+        </div>
+        <button class="btn btn-primary" id="noticeSubmit">공지 등록</button>
+      </div>
+    `;
+
+    // Toggle active
+    document.querySelectorAll('[data-notice-toggle]').forEach(b =>
+      b.addEventListener('click', async () => {
+        const id = Number(b.dataset.noticeToggle);
+        const newActive = b.dataset.active !== '1';
+        try {
+          await api(`/api/admin/notices/${id}`, { method: 'PATCH', body: JSON.stringify({ active: newActive }) });
+          toast(newActive ? '공지 활성화됨' : '공지 꺼짐');
+          await renderAdminNotice();
+        } catch(e) { toast(e.message); }
+      }));
+
+    // Delete
+    document.querySelectorAll('[data-notice-del]').forEach(b =>
+      b.addEventListener('click', async () => {
+        if (!confirm(`"${b.dataset.title}" 공지를 삭제할까요?`)) return;
+        try {
+          await api(`/api/admin/notices/${Number(b.dataset.noticeDel)}`, { method: 'DELETE' });
+          toast('삭제되었습니다');
+          await renderAdminNotice();
+        } catch(e) { toast(e.message); }
+      }));
+
+    // Submit
+    $('#noticeSubmit').addEventListener('click', async () => {
+      const title  = $('#noticeTitle').value.trim();
+      const body   = $('#noticeBody').value.trim();
+      const expire = $('#noticeExpire').value;  // datetime-local → "YYYY-MM-DDTHH:MM"
+      if (!title) { toast('제목을 입력해주세요'); return; }
+      if (!body)  { toast('내용을 입력해주세요'); return; }
+      // Convert local datetime to ISO (KST offset +09:00)
+      let expireISO = null;
+      if (expire) {
+        const pad = n => String(n).padStart(2, '0');
+        const d = new Date(expire);
+        // Just use the value directly as KST
+        expireISO = expire + ':00+09:00';
+      }
+      try {
+        await api('/api/admin/notices', {
+          method: 'POST',
+          body: JSON.stringify({ title, body, expire_at: expireISO }),
+        });
+        toast('공지 등록됨 ✓');
+        await renderAdminNotice();
+      } catch(e) { toast(e.message); }
+    });
+  }
+
+  function renderAdminLateNight() {
+    // Group admin menu items by period_id
+    const itemsByPeriod = {};
+    const orphanItems = [];
+    for (const it of adminItems) {
+      if (it.period_id) {
+        (itemsByPeriod[it.period_id] = itemsByPeriod[it.period_id] || []).push(it);
+      } else {
+        orphanItems.push(it);
+      }
+    }
+
+    const periodsBlock = menuPeriods.length === 0 ? `
+      <div class="empty"><span class="empty-emoji">📭</span>등록된 기간이 없습니다. 아래에서 새로 추가하세요.</div>
+    ` : menuPeriods.map(p => renderPeriodCard(p, itemsByPeriod[p.id] || [])).join('');
+
+    const sortedHolidays = Array.from(holidaysSet).sort();
+
+    $('#adminBody').innerHTML = `
+      <div class="section-title">
+        <h2>야식 메뉴 기간 (${menuPeriods.filter(p=>p.active).length}개 활성)</h2>
+      </div>
+      <p class="muted-note" style="margin-bottom:10px;">
+        매 2주마다 메뉴가 바뀌니, 새 기간을 추가하고 그 기간의 메뉴 칩을 등록하세요.
+        같은 날짜에 상시(weekday)와 휴무일(holiday) 둘 다 정의하면 신청자가 알아서 매칭됩니다.
+      </p>
+
+      <div class="period-list">
+        ${periodsBlock}
+      </div>
+
+      ${orphanItems.length > 0 ? `
+        <div class="period-card orphan">
+          <div class="period-head">
+            <span class="period-kind orphan">⚠️ 기간 미배정</span>
+            <span class="period-label">기존(legacy) 메뉴</span>
+          </div>
+          <div class="period-body">
+            <div class="admin-list">
+              ${orphanItems.map(it => `
+                <div class="admin-row ${it.active ? '' : 'inactive'}">
+                  <div class="name">${escape(it.name)}</div>
+                  <button class="del" data-orphan-del="${it.id}" data-name="${escape(it.name)}">삭제</button>
+                </div>
+              `).join('')}
+            </div>
+            <p class="muted-note">위 메뉴는 기간이 정해지지 않아 신청자에게 안 보입니다. 삭제하거나 무시해주세요.</p>
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="section-title"><h2>새 기간 추가</h2></div>
+      <div class="period-add-form">
+        <div class="field-row">
+          <input class="input" id="newPeriodLabel" maxlength="50" placeholder="예: 6월 전반" />
+          <select class="input" id="newPeriodKind" style="max-width:130px;">
+            <option value="weekday">상시</option>
+            <option value="holiday">매장 휴무일</option>
+          </select>
+        </div>
+        <div class="field-row" style="margin-top:6px;">
+          <input class="input" id="newPeriodStart" type="date" />
+          <span style="color:var(--muted);align-self:center;">~</span>
+          <input class="input" id="newPeriodEnd" type="date" />
+        </div>
+        <button class="btn btn-primary" id="addPeriodBtn" style="margin-top:8px;">+ 기간 추가</button>
+      </div>
+
+      <div class="section-title" style="margin-top:24px;">
+        <h2>🏪 매장 휴무일 (${sortedHolidays.length}개)</h2>
+      </div>
+      <p class="muted-note" style="margin-bottom:10px;">
+        등록된 날짜는 자동으로 휴무일 메뉴가 적용됩니다.
+      </p>
+      <div class="holiday-list">
+        ${sortedHolidays.length === 0 ? `
+          <div class="empty"><span class="empty-emoji">📭</span>등록된 휴무일이 없습니다</div>
+        ` : sortedHolidays.map(d => {
+          const dt = new Date(d + 'T00:00:00');
+          const dow = ['일','월','화','수','목','금','토'][dt.getDay()];
+          return `
+            <div class="holiday-row">
+              <span class="hr-date">${d.slice(5)} (${dow})</span>
+              <span class="hr-full">${d}</span>
+              <button class="del" data-holiday-del="${d}">제거</button>
+            </div>
+          `;
+        }).join('')}
+      </div>
+      <div class="field-row" style="margin-top:8px;">
+        <input class="input" id="newHolidayDate" type="date" style="flex:1;" />
+        <input class="input" id="newHolidayLabel" maxlength="30" placeholder="라벨 (선택)" />
+        <button class="btn btn-primary" id="addHolidayBtn">+ 추가</button>
+      </div>
+    `;
+
+    // Period actions
+    document.querySelectorAll('[data-period-toggle]').forEach(b =>
+      b.addEventListener('click', async () => {
+        const id = Number(b.dataset.periodToggle);
+        const newActive = b.dataset.active !== '1';
+        try {
+          await api(`/api/menu-periods/${id}`, { method: 'PATCH', body: JSON.stringify({ active: newActive }) });
+          await loadMenuPeriods({ include_inactive: true });
+          renderAdmin();
+        } catch (e) { toast(e.message); }
+      }));
+
+    document.querySelectorAll('[data-period-del]').forEach(b =>
+      b.addEventListener('click', async () => {
+        const id = Number(b.dataset.periodDel);
+        if (!confirm(`"${b.dataset.label}" 기간과 그 안의 모든 메뉴를 삭제할까요?`)) return;
+        try {
+          await api(`/api/menu-periods/${id}`, { method: 'DELETE' });
+          toast('삭제되었습니다');
+          await Promise.all([loadMenuPeriods({ include_inactive: true }), loadAdminItems()]);
+          renderAdmin();
+        } catch (e) { toast(e.message); }
+      }));
+
+    // Period menu item actions
+    document.querySelectorAll('[data-item-toggle]').forEach(b =>
+      b.addEventListener('click', async () => {
+        const id = Number(b.dataset.itemToggle);
         const newActive = b.dataset.active !== '1';
         try {
           await api(`/api/menu-items/${id}`, { method: 'PATCH', body: JSON.stringify({ active: newActive }) });
@@ -2428,9 +3048,9 @@
         } catch (e) { toast(e.message); }
       }));
 
-    document.querySelectorAll('[data-del]').forEach(b =>
+    document.querySelectorAll('[data-item-del]').forEach(b =>
       b.addEventListener('click', async () => {
-        const id = Number(b.dataset.del);
+        const id = Number(b.dataset.itemDel);
         if (!confirm(`"${b.dataset.name}" 메뉴를 삭제할까요?`)) return;
         try {
           await api(`/api/menu-items/${id}`, { method: 'DELETE' });
@@ -2440,20 +3060,113 @@
         } catch (e) { toast(e.message); }
       }));
 
-    const input = $('#newName');
-    async function addMenu() {
-      const name = input.value.trim();
-      if (!name) { toast('메뉴 이름을 입력해주세요'); return; }
+    document.querySelectorAll('[data-orphan-del]').forEach(b =>
+      b.addEventListener('click', async () => {
+        const id = Number(b.dataset.orphanDel);
+        if (!confirm(`"${b.dataset.name}" 메뉴를 삭제할까요?`)) return;
+        try {
+          await api(`/api/menu-items/${id}`, { method: 'DELETE' });
+          await loadAdminItems();
+          renderAdmin();
+        } catch (e) { toast(e.message); }
+      }));
+
+    // Per-period add menu button
+    document.querySelectorAll('[data-add-period-item]').forEach(b =>
+      b.addEventListener('click', async () => {
+        const periodId = Number(b.dataset.addPeriodItem);
+        const wrap = b.closest('.period-card');
+        const nameInput = wrap.querySelector('[data-new-item-name]');
+        const name = nameInput.value.trim();
+        if (!name) { toast('메뉴 이름을 입력해주세요'); return; }
+        try {
+          await api('/api/menu-items', {
+            method: 'POST',
+            body: JSON.stringify({ meal_type: 'late_night', name, period_id: periodId }),
+          });
+          toast('추가되었습니다');
+          nameInput.value = '';
+          await loadAdminItems();
+          renderAdmin();
+        } catch (e) { toast(e.message); }
+      }));
+
+    // New period add
+    $('#addPeriodBtn').addEventListener('click', async () => {
+      const label = $('#newPeriodLabel').value.trim();
+      const kind = $('#newPeriodKind').value;
+      const start = $('#newPeriodStart').value;
+      const end = $('#newPeriodEnd').value;
+      if (!label || !start || !end) { toast('모든 항목을 입력해주세요'); return; }
       try {
-        await api('/api/menu-items', { method: 'POST', body: JSON.stringify({ meal_type: 'late_night', name }) });
-        toast('추가되었습니다');
-        input.value = '';
-        await loadAdminItems();
+        await api('/api/menu-periods', {
+          method: 'POST',
+          body: JSON.stringify({ meal_type: 'late_night', label, kind, start_date: start, end_date: end }),
+        });
+        toast('기간 추가됨');
+        await loadMenuPeriods({ include_inactive: true });
         renderAdmin();
       } catch (e) { toast(e.message); }
-    }
-    $('#addBtn').addEventListener('click', addMenu);
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') addMenu(); });
+    });
+
+    // Holiday actions
+    document.querySelectorAll('[data-holiday-del]').forEach(b =>
+      b.addEventListener('click', async () => {
+        const date = b.dataset.holidayDel;
+        if (!confirm(`${date} 휴무일을 제거할까요?`)) return;
+        try {
+          await api(`/api/holidays/${date}`, { method: 'DELETE' });
+          await loadHolidays();
+          renderAdmin();
+        } catch (e) { toast(e.message); }
+      }));
+
+    $('#addHolidayBtn').addEventListener('click', async () => {
+      const date = $('#newHolidayDate').value;
+      const label = $('#newHolidayLabel').value.trim();
+      if (!date) { toast('날짜를 선택해주세요'); return; }
+      try {
+        await api('/api/holidays', { method: 'POST', body: JSON.stringify({ date, label }) });
+        toast('휴무일 추가됨');
+        $('#newHolidayDate').value = '';
+        $('#newHolidayLabel').value = '';
+        await loadHolidays();
+        renderAdmin();
+      } catch (e) { toast(e.message); }
+    });
+  }
+
+  function renderPeriodCard(p, items) {
+    const kindLabel = p.kind === 'holiday' ? '🏪 매장 휴무일' : '🍽️ 상시';
+    return `
+      <div class="period-card ${p.active ? '' : 'inactive'} ${p.kind === 'holiday' ? 'holiday' : ''}">
+        <div class="period-head">
+          <span class="period-kind ${p.kind}">${kindLabel}</span>
+          <span class="period-label">${escape(p.label)}</span>
+          <span class="period-range">${p.start_date.slice(5)} ~ ${p.end_date.slice(5)}</span>
+          <div class="period-actions">
+            <button class="btn-sm btn-ghost" data-period-toggle="${p.id}" data-active="${p.active ? 1 : 0}">${p.active ? '숨기기' : '보이기'}</button>
+            <button class="btn-sm btn-ghost" data-period-del="${p.id}" data-label="${escape(p.label)}">삭제</button>
+          </div>
+        </div>
+        <div class="period-body">
+          <div class="admin-list">
+            ${items.length === 0 ? `<div class="muted-note" style="text-align:center;padding:10px;">메뉴 없음</div>` :
+              items.map(it => `
+                <div class="admin-row ${it.active ? '' : 'inactive'}">
+                  <div class="name">${escape(it.name)}</div>
+                  <button data-item-toggle="${it.id}" data-active="${it.active}">${it.active ? '숨기기' : '보이기'}</button>
+                  <button class="del" data-item-del="${it.id}" data-name="${escape(it.name)}">삭제</button>
+                </div>
+              `).join('')}
+          </div>
+          <div class="field-row" style="margin-top:8px;">
+            <input class="input" data-new-item-name maxlength="50" placeholder="예: 돼지국밥" />
+            <button class="btn btn-primary" data-add-period-item="${p.id}">+ 메뉴</button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   function renderAdminBreakfast() {
@@ -2728,6 +3441,18 @@
       kimbapOptions = await api('/api/kimbap-options' + qs);
     } catch { kimbapOptions = []; }
   }
+  async function loadHolidays() {
+    try {
+      const list = await api('/api/holidays');
+      holidaysSet = new Set((list || []).map(h => h.date));
+    } catch { holidaysSet = new Set(); }
+  }
+  async function loadMenuPeriods({ include_inactive = false } = {}) {
+    try {
+      const qs = include_inactive ? '?include_inactive=1' : '';
+      menuPeriods = await api('/api/menu-periods' + qs);
+    } catch { menuPeriods = []; }
+  }
   async function loadAdminItems() {
     try { adminItems = await api('/api/menu-items?include_inactive=1&meal_type=late_night'); }
     catch { adminItems = []; }
@@ -2782,14 +3507,22 @@
 
     if (role === 'admin' && !user.is_admin) saveRole(null);
 
-    if (!role) { renderRolePicker(); return; }
+    // 로그인 직후 공지 팝업 트리거 (역할 선택 화면에서 1회)
+    if (!role) { renderRolePicker(); checkNotice(); return; }
 
     if (role === 'applicant') {
-      await Promise.all([loadMyOrders(), loadMenuItems(), loadBreakfastStructure(), loadKimbapOptions()]);
+      lateNightMenuByDate = {};  // clear cache on enter
+      await Promise.all([
+        loadMyOrders(),
+        loadMenuItems(),
+        loadBreakfastStructure(),
+        loadKimbapOptions(),
+        loadHolidays(),
+      ]);
       renderApplicant();
       startPolling();
     } else if (role === 'acting') {
-      await loadActiveSummary();
+      await Promise.all([loadActiveSummary(), loadHolidays()]);
       if (actingStep === 'list' && actingMealType) {
         if (!actingDate) actingDate = todayStr();
         await loadActiveOrders();
@@ -2800,10 +3533,58 @@
       await Promise.all([
         loadAdminItems(),
         loadBreakfastStructure({ include_inactive: true }),
-        loadKimbapOptions({ include_inactive: true })
+        loadKimbapOptions({ include_inactive: true }),
+        loadHolidays(),
+        loadMenuPeriods({ include_inactive: true }),
       ]);
       renderAdmin();
     }
+  }
+
+  // Boot
+  loadStored();
+  render();
+  window.addEventListener('focus', () => { if (user && role) render(); });
+
+  // ── 공지 팝업 (관리자가 등록한 공지, 첫 접속 1회만) ──
+  async function checkNotice() {
+    if (!user) return;
+    try {
+      const notice = await api('/api/notices/active');
+      if (!notice) return;
+      const seenKey = `knuh_notice_seen_${notice.id}`;
+      if (localStorage.getItem(seenKey)) return;
+
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" style="max-width:440px;">
+          <div class="viewer-content" style="padding:22px 20px 8px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+              <span style="font-size:24px;">📢</span>
+              <div>
+                <div style="font-size:15px;font-weight:800;color:#111;">${escape(notice.title)}</div>
+                <div style="font-size:11px;color:#888;margin-top:2px;">${new Date(notice.created_at).toLocaleDateString('ko-KR', {year:'numeric',month:'long',day:'numeric'})}</div>
+              </div>
+            </div>
+            <div style="font-size:14px;line-height:1.75;color:#333;white-space:pre-wrap;">${escape(notice.body)}</div>
+            ${notice.expire_at ? `<div style="margin-top:12px;font-size:11px;color:#aaa;">이 공지는 ${new Date(notice.expire_at).toLocaleDateString('ko-KR', {month:'long',day:'numeric', hour:'2-digit',minute:'2-digit'})}까지 표시됩니다.</div>` : ''}
+          </div>
+          <div style="padding:12px 20px 20px;display:flex;gap:8px;">
+            <button id="noticeClose" style="flex:1;padding:12px;background:#111;color:#fff;border:none;border-radius:11px;font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;">확인</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      document.body.style.overflow = 'hidden';
+      function closeNotice() {
+        localStorage.setItem(seenKey, '1');
+        overlay.remove();
+        document.body.style.overflow = '';
+      }
+      document.getElementById('noticeClose').addEventListener('click', closeNotice);
+      overlay.addEventListener('click', e => { if (e.target === overlay) closeNotice(); });
+    } catch(e) { /* 공지 없거나 오류 — 무시 */ }
   }
 
   // Boot
