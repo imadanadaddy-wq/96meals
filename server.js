@@ -1290,7 +1290,9 @@ app.get('/api/orders/my', (req, res) => {
 
   const orders = db.prepare(`
     SELECT * FROM meal_orders
-    WHERE user_id = ? AND status = 'pending' AND service_date >= ?
+    WHERE user_id = ?
+      AND status IN ('pending', 'picked_up')
+      AND service_date >= ?
     ORDER BY service_date, meal_type
   `).all(user.id, fromDate);
   res.json(orders.map(decorateOrder));
@@ -1304,6 +1306,7 @@ app.delete('/api/orders/:id', (req, res) => {
   const order = db.prepare('SELECT * FROM meal_orders WHERE id = ?').get(orderId);
   if (!order) return res.status(404).json({ error: '주문을 찾을 수 없습니다' });
   if (order.user_id !== user.id) return res.status(403).json({ error: '본인 주문만 취소 가능합니다' });
+  if (order.status === 'picked_up') return res.status(400).json({ error: '이미 수령 완료된 주문은 취소할 수 없습니다' });
 
   db.prepare('DELETE FROM meal_orders WHERE id = ?').run(orderId);
   res.json({ ok: true });

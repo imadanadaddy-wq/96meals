@@ -2258,3 +2258,61 @@ input, textarea { font-family: inherit; }
   color: #888;
   margin-bottom: 8px;
 }
+
+/* ===== 신청자 홈 - 수령완료 상태 표시 ===== */
+.my-order-picked {
+  opacity: 0.7;
+}
+.my-order-picked .my-order-main {
+  cursor: default;
+  pointer-events: none;
+}
+.picked-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #4caf50;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ===== 액팅 바코드 세로 테스트 탭 ===== */
+.test-barcode-card {
+  background: var(--card-bg, #fff);
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.10);
+  padding: 24px 20px 20px;
+  text-align: center;
+  margin: 0 4px;
+}
+.tbc-name {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin-bottom: 4px;
+}
+.tbc-eid {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+.tbc-barcode-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 120px;
+  margin-bottom: 20px;
+  /* 세로 바코드를 담을 공간 확보 */
+  overflow: hidden;
+}
+.tbc-barcode-svg {
+  /* rotate(90deg) 후 가로/세로가 뒤바뀌므로 wrapping으로 잘림 방지 */
+  display: block;
+}
+.tbc-menu {
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--surface, #f5f5f5);
+  border-radius: 8px;
+  padding: 8px 12px;
+  text-align: center;
+}

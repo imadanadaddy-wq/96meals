@@ -347,11 +347,13 @@
       ` : `
         <div class="section-title" style="margin-top:14px;">
           <h2>내 신청 현황</h2>
-          <span class="hint">${sorted.some(o => o.meal_type === 'breakfast') ? `탭하면 바코드 · ` : ''}${sorted.length}건</span>
+          <span class="hint">${sorted.filter(o => o.status === 'pending' && o.meal_type === 'breakfast').length > 0 ? `탭하면 바코드 · ` : ''}${sorted.length}건</span>
         </div>
         <div class="my-orders-list">
-          ${sorted.map((o, i) => `
-            <div class="my-order-row">
+          ${sorted.map((o, i) => {
+            const isPicked = o.status === 'picked_up';
+            return `
+            <div class="my-order-row${isPicked ? ' my-order-picked' : ''}">
               ${o.meal_type === 'late_night' ? `
                 <div class="my-order-main my-order-static">
                   <div class="meal-badge ${o.meal_type}">${mealEmoji(o.meal_type)}</div>
@@ -359,20 +361,21 @@
                     <div class="date">${fmtFull(o.service_date)} · ${mealLabel(o.meal_type)}</div>
                     <div class="menu">${escape(o.menu)}</div>
                   </div>
+                  ${isPicked ? '<span class="picked-badge">✓ 수령완료</span>' : ''}
                 </div>
               ` : `
-                <button class="my-order-main" data-view-idx="${i}">
+                <button class="my-order-main${isPicked ? ' picked' : ''}" ${isPicked ? '' : `data-view-idx="${i}"`}>
                   <div class="meal-badge ${o.meal_type}">${mealEmoji(o.meal_type)}</div>
                   <div class="info">
                     <div class="date">${fmtFull(o.service_date)} · ${mealLabel(o.meal_type)}</div>
                     <div class="menu">${o.selection ? escape(summarizeSelection(o.selection)) : escape(o.menu)}</div>
                   </div>
-                  <span class="view-hint">바코드 ›</span>
+                  ${isPicked ? '<span class="picked-badge">✓ 수령완료</span>' : '<span class="view-hint">바코드 ›</span>'}
                 </button>
               `}
-              <button class="x" data-cancel-id="${o.id}" title="취소">✕</button>
+              ${isPicked ? '' : `<button class="x" data-cancel-id="${o.id}" title="취소">✕</button>`}
             </div>
-          `).join('')}
+          `}).join('')}
         </div>
 
         <div style="margin-top:18px;">
@@ -1385,6 +1388,11 @@
           <span class="count">오늘 ${countFor('late_night', today)} · 내일 ${countFor('late_night', tomorrow)}</span>
         </button>
       </div>
+      <div style="margin-top:12px;">
+        <button class="btn btn-ghost btn-sm" id="goTestTab" style="width:100%;font-size:12px;color:var(--muted);">
+          🧪 바코드 세로 인식 테스트
+        </button>
+      </div>
     `;
 
     $('#switchRole').addEventListener('click', () => { saveRole(null); render(); });
@@ -1395,6 +1403,140 @@
         actingStep = 'list';
         renderActing();
       }));
+    $('#goTestTab')?.addEventListener('click', () => {
+      actingStep = 'test';
+      renderActing();
+    });
+  }
+
+  async function renderActingTest() {
+    // ===== 액팅 바코드 세로 인식 테스트 탭 =====
+    const today = todayStr();
+
+    // 오늘 pending 주문 불러오기 (breakfast + late_night 합산)
+    let todayOrders = [];
+    try {
+      const [bf, ln] = await Promise.all([
+        api(`/api/orders/active?meal_type=breakfast&date=${today}`).catch(() => []),
+        api(`/api/orders/active?meal_type=late_night&date=${today}`).catch(() => []),
+      ]);
+      todayOrders = [...bf, ...ln];
+    } catch { todayOrders = []; }
+
+    // 메뉴 요약 (한 줄)
+    function menuSummary(o) {
+      const sel = o.selection;
+      if (o.meal_type === 'breakfast' && sel) {
+        if (sel.meal_form === 'kimbap') return sel.kimbap_choice || '김밥';
+        if (sel.meal_form === 'no_meal') return '미수령';
+        if (sel.meal_form === 'snack_pick') {
+          const tiers = (sel.priorities || []).map(p => p.slot_name || p.category_name).filter(Boolean);
+          return tiers.slice(0, 2).join(' / ') || '조식';
+        }
+      }
+      if (o.meal_type === 'late_night') {
+        const ln = o.selection?.late_night_priority;
+        if (Array.isArray(ln) && ln.length > 0) return ln.map(x => x.menu_name).join(' / ');
+        return o.menu || '야식';
+      }
+      return o.menu || '';
+    }
+
+    // 현재 뷰어 인덱스 (스와이프)
+    let testIdx = 0;
+    const orders = todayOrders;
+
+    function renderTestCard() {
+      const cardWrap = document.getElementById('testCardWrap');
+      if (!cardWrap) return;
+
+      if (orders.length === 0) {
+        cardWrap.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);font-size:14px;">오늘 신청 내역이 없습니다</div>`;
+        return;
+      }
+
+      const o = orders[testIdx];
+      const summary = menuSummary(o);
+
+      cardWrap.innerHTML = `
+        <div class="test-barcode-card">
+          <div class="tbc-name">${escape(o.name)}</div>
+          <div class="tbc-eid">사번 ${escape(String(o.employee_id))}</div>
+          <div class="tbc-barcode-wrap">
+            <svg class="tbc-barcode-svg"></svg>
+          </div>
+          <div class="tbc-menu">${escape(summary)}</div>
+        </div>
+        <div class="viewer-nav" style="margin-top:8px;">
+          <button class="nav-btn" id="testPrev" ${testIdx === 0 ? 'disabled' : ''}>‹</button>
+          <div class="viewer-indicator">
+            <span>${orders.length > 1 ? `${testIdx + 1} / ${orders.length}` : ''}</span>
+            <span class="swipe-hint">${orders.length > 1 ? '← swipe →' : ''}</span>
+          </div>
+          <button class="nav-btn" id="testNext" ${testIdx === orders.length - 1 ? 'disabled' : ''}>›</button>
+        </div>
+      `;
+
+      // 세로 바코드 렌더링: JsBarcode로 생성 후 90° 회전
+      try {
+        const svg = cardWrap.querySelector('.tbc-barcode-svg');
+        JsBarcode(svg, String(o.employee_id), {
+          format: 'CODE128',
+          displayValue: false,
+          height: 200,   // 회전 전 height → 회전 후 가로 폭
+          width: 2,
+          margin: 10,
+          background: '#ffffff',
+          lineColor: '#000000',
+        });
+        // SVG 원래 크기 읽어서 rotate 후 컨테이너 맞춤
+        if (svg) {
+          const svgW = svg.viewBox.baseVal.width || svg.getBoundingClientRect().width;
+          const svgH = svg.viewBox.baseVal.height || svg.getBoundingClientRect().height;
+          // 회전하면 가로↔세로 교체 → 컨테이너 높이를 원래 폭으로 맞춤
+          svg.style.transform = 'rotate(90deg)';
+          svg.style.transformOrigin = 'center center';
+          // 부모 wrap 높이 강제 설정 (회전 후 실제 점유 높이)
+          const wrap = cardWrap.querySelector('.tbc-barcode-wrap');
+          if (wrap && svgW > 0) wrap.style.minHeight = `${svgW}px`;
+        }
+      } catch (e) { console.error('barcode error', e); }
+
+      // 네비게이션 이벤트
+      document.getElementById('testPrev')?.addEventListener('click', () => {
+        if (testIdx > 0) { testIdx--; renderTestCard(); }
+      });
+      document.getElementById('testNext')?.addEventListener('click', () => {
+        if (testIdx < orders.length - 1) { testIdx++; renderTestCard(); }
+      });
+
+      // 스와이프 제스처
+      let touchStartX = 0;
+      cardWrap.addEventListener('touchstart', e => { touchStartX = e.changedTouches[0].clientX; }, { passive: true });
+      cardWrap.addEventListener('touchend', e => {
+        const dx = e.changedTouches[0].clientX - touchStartX;
+        if (Math.abs(dx) > 40) {
+          if (dx < 0 && testIdx < orders.length - 1) { testIdx++; renderTestCard(); }
+          else if (dx > 0 && testIdx > 0) { testIdx--; renderTestCard(); }
+        }
+      }, { passive: true });
+    }
+
+    root.innerHTML = `
+      ${renderBrand()}
+      <div class="topbar">
+        <button class="btn btn-ghost btn-sm" id="backBtn">← 뒤로</button>
+        <h1 style="font-size:15px;">🧪 바코드 테스트</h1>
+        <span style="width:60px;"></span>
+      </div>
+      <p style="margin:4px 4px 16px;color:var(--muted);font-size:12px;">
+        세로 바코드 인식률 테스트용 · 오늘(${today}) 신청 ${orders.length}건
+      </p>
+      <div id="testCardWrap"></div>
+    `;
+
+    $('#backBtn').addEventListener('click', () => { actingStep = 'choose'; render(); });
+    renderTestCard();
   }
 
   async function renderActingList() {
@@ -1672,6 +1814,7 @@
 
   function renderActing() {
     if (actingStep === 'choose') renderActingChoose();
+    else if (actingStep === 'test') renderActingTest();
     else renderActingList();
   }
 
